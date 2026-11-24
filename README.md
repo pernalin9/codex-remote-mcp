@@ -50,10 +50,10 @@ Gemini 网页端需要通过公网 HTTPS 访问本机的 `/mcp/v1` 与 OAuth 端
 无需手动克隆或翻阅文档，直接把下面这句话发给你本机的 Codex：
 
 ```text
-请把 <本仓库的 Git 地址> 克隆到合适的本地目录（如目录已存在先问我），然后读取仓库里的 DEPLOY_PROMPT.md，按其中的步骤一步步引导我完成部署。
+请把 https://github.com/pernalin9/codex-remote-mcp.git 克隆到合适的本地目录（如目录已存在先问我），然后读取仓库里的 DEPLOY_PROMPT.md，按其中的步骤一步步引导我完成部署。
 ```
 
-> 提示：请将 `<本仓库的 Git 地址>` 替换为当前仓库的 Git URL。完整部署流程见 [DEPLOY_PROMPT.md](DEPLOY_PROMPT.md)，绑定完成后按 [GEMINI-ACCEPTANCE.md](GEMINI-ACCEPTANCE.md) 在 Gemini 网页端做一次全链路验收。
+完整部署流程见 [DEPLOY_PROMPT.md](DEPLOY_PROMPT.md)，绑定完成后按 [GEMINI-ACCEPTANCE.md](GEMINI-ACCEPTANCE.md) 在 Gemini 网页端做一次全链路验收。
 
 ---
 
