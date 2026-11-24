@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env
+config/repos.json
+config/profiles.json
+config/gemini-instructions.md
+*.sqlite*
+*.log

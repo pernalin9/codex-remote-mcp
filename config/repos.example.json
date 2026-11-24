@@ -1,0 +1,7 @@
+{
+  "Example": {
+    "path": "/absolute/path/to/project",
+    "aliases": ["example-project"],
+    "note": "Replace with an absolute path on the machine running the bridge."
+  }
+}
