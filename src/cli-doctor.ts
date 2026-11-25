@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { accessSync, constants, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
-import { profiles, rules } from "./config.js";
+import { profiles, readWorkflowRules } from "./config.js";
 import { bridgeHealth } from "./instance.js";
 import { parseCatalog, repoLabel } from "./projects.js";
 import { bridgePort, codexExecutable, dataDirectory, loadBridgeEnv, projectRoot, publicOrigin } from "./runtime.js";
@@ -128,6 +128,9 @@ check("config/repos.json",()=>{
 },"Fill config/repos.json with readable absolute project directories and check DEFAULT_REPO.");
 check("config/profiles.json",()=>Object.keys(profiles()).length+" profiles.",
   "Fill config/profiles.json with valid model IDs and reasoning settings, including default and coding.");
-check("config/gemini-instructions.md",()=>[...rules()].length+" / 6000 characters.",
-  "Provide nonempty workflow rules with at most 6000 characters.");
+check("config/gemini-instructions.md + config/user-instructions.md",()=>{
+  const {text,userLoaded}=readWorkflowRules();
+  const userStatus=userLoaded ? "loaded" : "skipped (missing or blank)";
+  return "System rules loaded; optional user rules "+userStatus+". Combined: "+[...text].length+" / 6000 characters.";
+},"Check that the required system rules are nonempty, the optional user rules are readable if present, and the combined rules have at most 6000 characters.");
 await Promise.all([inspectCodex(),inspectPort()]);

@@ -10,6 +10,7 @@ import { runInNewContext } from "node:vm";
 import { createApp } from "../dist/mcp.js";
 import { createStart, createGetProject } from "../dist/start.js";
 import { dataDirectory, loadBridgeEnv } from "../dist/runtime.js";
+import { rules } from "../dist/config.js";
 import { callInstance, verifiedInstance } from "../dist/instance.js";
 import { configuredBridge } from "./config-fixture.mjs";
 
@@ -111,6 +112,8 @@ test("M0 OAuth discovery, Google callbacks, client authentication, revocation an
     assert.equal("workflow_rules" in opening.structuredContent,false);
     assert.equal(opening.structuredContent.profiles.probe.model,"fixture-model");
     assert.equal(opening.structuredContent.profiles.probe.reasoningEffort,"medium");
+    const withRules = await rpc(origin,tokens.access_token,"tools/call",{name:"codex_start",arguments:{repo:"pic"}});
+    assert.equal(withRules.structuredContent.workflow_rules,"Fixture workflow rules.");
     const result = await rpc(origin,tokens.access_token,"tools/call",{name:"codex_review",arguments:{repo:"pic",prompt:"probe"}});
     assert.equal(JSON.parse(result.content[0].text).final_response,"ok");
     let latest = tokens.access_token;
@@ -266,7 +269,7 @@ test("live desktop-user bridge: new read-only thread and resume", {skip:process.
     const opened=await rpc(origin,tokens.access_token,"tools/call",{name:"codex_start",arguments:{repo:"通用"}});
     assert.ok(!opened.isError);
     assert.deepEqual(opened.structuredContent.warnings,[]);
-    assert.equal(opened.structuredContent.workflow_rules,readFileSync(new URL("../config/gemini-instructions.md",import.meta.url),"utf8"));
+    assert.equal(opened.structuredContent.workflow_rules,rules());
     assert.ok(opened.structuredContent.recent_threads.every(t=>t.repo==="通用"));
     const marker = "M0-"+randomBytes(4).toString("hex");
     const first = await run({title:"M0 本机联通",profile:"probe",prompt:"记住测试词 "+marker+"。仅回复该测试词。无需调用任何工具或读取文件。"});

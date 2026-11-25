@@ -119,6 +119,45 @@ async function eventually(check) {
   assert.fail("Timed out waiting for fixture state");
 }
 
+test("workflow rules merge optional user rules and hot reload file changes",async t=>{
+  const f=runtimeFixture(t);
+  const systemFile=path.join(f.home,"config","gemini-instructions.md");
+  const userFile=path.join(f.home,"config","user-instructions.md");
+  const {rules,readWorkflowRules}=await f.module("config");
+  const system="System rules.\r\n";
+  const heading="# 以下为用户自定义规则";
+
+  assert.throws(rules,{code:"ENOENT"});
+  fs.writeFileSync(systemFile," \n");
+  assert.throws(rules,/EMPTY_WORKFLOW_RULES/);
+  fs.writeFileSync(systemFile,system);
+  assert.deepEqual(readWorkflowRules(),{text:system,userLoaded:false});
+
+  fs.writeFileSync(userFile," \r\n\t");
+  assert.deepEqual(readWorkflowRules(),{text:system,userLoaded:false});
+
+  const titledUser=" \n"+heading+"\nKeep exact wording.\n";
+  fs.writeFileSync(userFile,titledUser);
+  assert.deepEqual(readWorkflowRules(),{text:system+"\n\n"+titledUser,userLoaded:true});
+
+  const untitledPrefix=system+"\n\n"+heading+"\n\n";
+  fs.writeFileSync(userFile,"First");
+  assert.equal(rules(),untitledPrefix+"First");
+  fs.writeFileSync(userFile,"Other");
+  assert.equal(rules(),untitledPrefix+"Other");
+
+  const userAtLimit="😀".repeat(6000-[...untitledPrefix].length);
+  fs.writeFileSync(userFile,userAtLimit);
+  assert.equal([...rules()].length,6000);
+  fs.writeFileSync(userFile,userAtLimit+"!");
+  assert.throws(rules,/WORKFLOW_RULES_OVER_6000/);
+
+  fs.unlinkSync(userFile);
+  assert.deepEqual(readWorkflowRules(),{text:system,userLoaded:false});
+  fs.writeFileSync(userFile,"Restored");
+  assert.equal(rules(),untitledPrefix+"Restored");
+});
+
 test("binary detection, UTF-16 and hardlink errors preserve byte metadata",t => {
   const root=fs.realpathSync.native(fixture(t).home);
   const put=(name,body)=>fs.writeFileSync(path.join(root,name),body);

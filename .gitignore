@@ -3,6 +3,6 @@ dist/
 .env
 config/repos.json
 config/profiles.json
-config/gemini-instructions.md
+config/user-instructions.md
 *.sqlite*
 *.log
