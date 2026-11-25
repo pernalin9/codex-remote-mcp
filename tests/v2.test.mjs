@@ -314,6 +314,16 @@ test("execute uses automatic approval review and read-only review disables escal
     .map(r=>[r.method,r.params.approvalPolicy,r.params.approvalsReviewer]),expected);
 });
 
+test("deployment examples use port 9088 and the five recommended profiles",()=>{
+  const example=name=>fs.readFileSync(new URL("../"+name,import.meta.url),"utf8");
+  assert.match(example(".env.example"),/^PORT=9088$/m);
+  assert.match(example("deploy/cloudflared-config.example.yml"),/^\s+service: http:\/\/127\.0\.0\.1:9088$/m);
+  const profiles=JSON.parse(example("config/profiles.example.json"));
+  assert.deepEqual(Object.fromEntries(Object.entries(profiles).map(([name,profile])=>[name,profile.reasoningEffort])),{
+    default:"high",coding:"high",probe:"medium",review:"high",deep_review:"high"
+  });
+});
+
 test("named tunnel uses the bridge origin and port and rejects missing or unsupported origins",async t=>{
   const f=runtimeFixture(t);
   const deploy=path.join(f.home,"deploy");
@@ -326,6 +336,9 @@ test("named tunnel uses the bridge origin and port and rejects missing or unsupp
   delete env.PORT;
   const run=(overrides={})=>spawnSync(process.execPath,[script],{env:{...env,...overrides},encoding:"utf8"});
   assert.notEqual(run().status,0);
+  const defaults=run({PUBLIC_BASE_URL:"https://bridge.example.org"});
+  assert.equal(defaults.status,0,defaults.stderr);
+  assert.deepEqual(JSON.parse(defaults.stdout),{hostname:"bridge.example.org",bridge:9088});
   fs.writeFileSync(path.join(f.home,".env"),"PUBLIC_BASE_URL=https://bridge.example.org\nPORT=19244\n");
   const result=run();
   assert.equal(result.status,0,result.stderr);

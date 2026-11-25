@@ -24,7 +24,8 @@ $cred = Join-Path $credentials ($id + '.json')
 if (-not (Test-Path -LiteralPath $cred)) { throw "Missing credentials for tunnel $id." }
 $config = Join-Path $data 'cloudflared.yml'
 $template = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'cloudflared-config.example.yml') -Raw
-[IO.File]::WriteAllText($config,$template.Replace('TUNNEL_UUID',$id).Replace('TUNNEL_HOSTNAME',$settings.hostname).Replace('BRIDGE_PORT',[string]$settings.bridge).Replace('TUNNEL_CREDENTIALS_PATH',$cred.Replace("'","''")))
+$bridgeOrigin = "http://127.0.0.1:$($settings.bridge)"
+[IO.File]::WriteAllText($config,$template.Replace('TUNNEL_UUID',$id).Replace('TUNNEL_HOSTNAME',$settings.hostname).Replace('http://127.0.0.1:9088',$bridgeOrigin).Replace('TUNNEL_CREDENTIALS_PATH',$cred.Replace("'","''")))
 & $cf tunnel --config $config ingress validate
 if ($LASTEXITCODE -ne 0) { throw 'Ingress validation failed.' }
 & $cf tunnel route dns $id $settings.hostname

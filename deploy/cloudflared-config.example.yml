@@ -4,6 +4,6 @@ metrics: 127.0.0.1:19225
 credentials-file: 'TUNNEL_CREDENTIALS_PATH'
 ingress:
   - hostname: TUNNEL_HOSTNAME
-    service: http://127.0.0.1:BRIDGE_PORT
+    service: http://127.0.0.1:9088
   - service: http_status:404
 

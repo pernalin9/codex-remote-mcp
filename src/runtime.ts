@@ -18,7 +18,7 @@ export function loadBridgeEnv() {
 }
 
 export function bridgePort() {
-  const raw = process.env.PORT ?? "19224";
+  const raw = process.env.PORT ?? "9088";
   const port = Number(raw);
   if (!/^\d{1,5}$/.test(raw) || port>65535) throw new Error("PORT must be an integer from 0 to 65535.");
   return port;

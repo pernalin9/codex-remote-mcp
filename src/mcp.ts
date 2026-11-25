@@ -36,7 +36,7 @@ export function createApp(db: DatabaseSync, base: string, review: Reviewer, star
   app.get("/mcp/v1",(_req,res)=>{res.set("Allow","POST").sendStatus(405);});
   app.post("/mcp/v1",authorize,async(req,res)=>{
     if (req.headers.origin && req.headers.origin !== base) {res.sendStatus(403);return;}
-    const server = new McpServer({name:"codex-remote-mcp",version:"0.1.0",icons:[{src:base+"/codex-remote.png",mimeType:"image/png",sizes:["512x512"]}]},{
+    const server = new McpServer({name:"codex-remote-mcp",version:"0.2.0",icons:[{src:base+"/codex-remote.png",mimeType:"image/png",sizes:["512x512"]}]},{
       instructions:"新对话首次使用 @codex 时，必须先调用 codex_start 并加载规则（include_rules=true）。后续协作严格遵循本次返回的 workflow_rules。为当前 Gemini 聊天命名时，在标题开头加一次 [Codex] 和一个空格，后接简短的任务名。这个前缀仅用于 Gemini 聊天标题。"
     });
     server.registerTool("codex_start",{

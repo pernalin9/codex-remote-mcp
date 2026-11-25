@@ -9,7 +9,7 @@ import path from "node:path";
 import { runInNewContext } from "node:vm";
 import { createApp } from "../dist/mcp.js";
 import { createStart, createGetProject } from "../dist/start.js";
-import { dataDirectory, loadBridgeEnv } from "../dist/runtime.js";
+import { bridgePort, dataDirectory, loadBridgeEnv } from "../dist/runtime.js";
 import { rules } from "../dist/config.js";
 import { callInstance, verifiedInstance } from "../dist/instance.js";
 import { configuredBridge } from "./config-fixture.mjs";
@@ -27,8 +27,12 @@ function approvalFields(html) {
   };
 }
 
-async function issueLiveCode(requestId) {
+function liveBridgeOrigin() {
   loadBridgeEnv();
+  return "http://127.0.0.1:"+bridgePort();
+}
+
+async function issueLiveCode(requestId) {
   const data=dataDirectory(), active=await verifiedInstance(data);
   assert.ok(active);
   return callInstance(data,active.entry,{approvalRequest:requestId});
@@ -99,6 +103,7 @@ test("M0 OAuth discovery, Google callbacks, client authentication, revocation an
     const {tokens,tokenCall,revoke} = await link(origin,app.locals.issueApprovalCode,method);
     const init=await rpc(origin,tokens.access_token,"initialize",{protocolVersion:"2025-11-25",capabilities:{},clientInfo:{name:"probe",version:"1"}});
     assert.equal(init.protocolVersion,"2025-11-25");
+    assert.equal(init.serverInfo.version,"0.2.0");
     assert.ok(init.instructions.includes("[Codex]"));
     assert.equal(init.serverInfo.icons[0].src,issuer+"/codex-remote.png");
     const image=await fetch(origin+"/codex-remote.png");
@@ -256,7 +261,7 @@ test("approval codes expire and are bound to the browser and OAuth request",asyn
 });
 
 test("live desktop-user bridge: new read-only thread and resume", {skip:process.env.BRIDGE_LIVE !== "1"},async()=>{
-  const origin = "http://127.0.0.1:19224";
+  const origin = liveBridgeOrigin();
   const {tokens,revoke} = await link(origin,issueLiveCode,"client_secret_basic");
   const run = async args=>{
     const result = await rpc(origin,tokens.access_token,"tools/call",{name:"codex_review",arguments:args});
@@ -282,7 +287,7 @@ test("live desktop-user bridge: new read-only thread and resume", {skip:process.
 });
 
 test("M1 live read/write/read on one thread", {skip:process.env.BRIDGE_LIVE!=="1",timeout:600000},async()=>{
-  const origin="http://127.0.0.1:19224";
+  const origin=liveBridgeOrigin();
   const {tokens,revoke}=await link(origin,issueLiveCode,"client_secret_basic");
   const call=async(name,args)=>{
     const r=await rpc(origin,tokens.access_token,"tools/call",{name,arguments:args});
@@ -320,7 +325,7 @@ test("M1 live read/write/read on one thread", {skip:process.env.BRIDGE_LIVE!=="1
 
 
 test("live cancellation persists an interrupted turn and releases the thread", {skip:process.env.BRIDGE_CANCEL_LIVE!=="1",timeout:180000},async()=>{
-  const origin="http://127.0.0.1:19224";
+  const origin=liveBridgeOrigin();
   const {tokens,revoke}=await link(origin,issueLiveCode,"client_secret_post");
   const tool=async(name,args)=>{
     const r=await rpc(origin,tokens.access_token,"tools/call",{name,arguments:args});
@@ -357,7 +362,7 @@ test("live cancellation persists an interrupted turn and releases the thread", {
 });
 
 test("live ephemeral probe returns a job result without a persistent thread", {skip:process.env.BRIDGE_EPHEMERAL_LIVE!=="1",timeout:150000},async()=>{
-  const origin="http://127.0.0.1:19224";
+  const origin=liveBridgeOrigin();
   const directory=dataDirectory();
   const {tokens,revoke}=await link(origin,issueLiveCode,"client_secret_post");
   const call=async(name,args)=>{
@@ -385,7 +390,7 @@ test("live ephemeral probe returns a job result without a persistent thread", {s
 });
 
 test("live occupied parent forks through a completed turn, renames and resumes", {skip:process.env.BRIDGE_FORK_LIVE!=="1",timeout:200000},async()=>{
-  const origin="http://127.0.0.1:19224";
+  const origin=liveBridgeOrigin();
   const {tokens,revoke}=await link(origin,issueLiveCode,"client_secret_post");
   const {withAppServer}=await import("../dist/stdio.js");
   const call=async(name,args)=>{

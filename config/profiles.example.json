@@ -1,8 +1,7 @@
 {
-  "default": { "model": "MODEL_FROM_MODEL_LIST", "reasoningEffort": "medium" },
-  "coding": { "model": "MODEL_FROM_MODEL_LIST", "reasoningEffort": "medium" },
-  "probe": { "model": "MODEL_FROM_MODEL_LIST", "reasoningEffort": "low" },
-  "review": { "model": "MODEL_FROM_MODEL_LIST", "reasoningEffort": "medium" },
-  "deep_review": { "model": "MODEL_FROM_MODEL_LIST", "reasoningEffort": "high" },
-  "reasoning": { "model": "MODEL_FROM_MODEL_LIST", "reasoningEffort": "high" }
+  "default": { "model": "MODEL_FROM_MODEL_LIST", "reasoningEffort": "high" },
+  "coding": { "model": "MODEL_FROM_MODEL_LIST", "reasoningEffort": "high" },
+  "probe": { "model": "MODEL_FROM_MODEL_LIST", "reasoningEffort": "medium" },
+  "review": { "model": "MODEL_FROM_MODEL_LIST", "reasoningEffort": "high" },
+  "deep_review": { "model": "MODEL_FROM_MODEL_LIST", "reasoningEffort": "high" }
 }
