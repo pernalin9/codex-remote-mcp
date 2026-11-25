@@ -11,7 +11,7 @@
 ### 1. Gemini 网页端自定义 MCP 的隐形门槛
 - **账号与界面条件**：Gemini Custom Apps（Developer Mode）对账号类型、地区、年龄、语言及活动记录（History）开关有平台限制。若常规界面找不到自定义 MCP 入口，可尝试访问 [https://gemini.google.com/usage?hl=en](https://gemini.google.com/usage?hl=en) 核对当前账号是否具备入口。
 - **热加载 vs 同步 Schema vs 重连**：
-  - 修改本地 `config/gemini-instructions.md`、`config/repos.json`、`config/profiles.json` **无需重连、无需重启**，在聊天里让 Gemini 再调一次 `codex_start` 即可生效。
+  - `config/gemini-instructions.md`、`config/user-instructions.md`、`config/repos.json` 和 `config/profiles.json` 支持热加载。文件更新后，在聊天里让 Gemini 再调一次 `codex_start` 即可生效。
   - 升级桥接服务并新增或修改工具参数后，在 Gemini Developer Mode 的 **Tool Schemas** 中点击 **Sync schema** 即可。
   - 修改 `.env` 需要重启本地桥接服务（`npm run ctl -- restart`）。
   - Gemini 保留有效的 OAuth 刷新令牌时可自动续期。关闭再打开应用时可以沿用该授权。解除账户关联或移除应用后，重新连接需要重新获取授权码。
@@ -29,15 +29,17 @@ Gemini 网页端需要通过公网 HTTPS 访问本机的 `/mcp/v1` 与 OAuth 端
 ### 3. 本地运行环境要求
 - **操作系统**：支持 **Windows** 与 **macOS**（统一 Node.js 运维入口，也兼容 Linux 回退路径）。
 - **Node.js**：需要 **Node 22.16+**（使用内置 `node:sqlite`）。
+- **本地监听**默认使用 `127.0.0.1:9088`。新部署时，部署引导从 `9088` 开始探测，端口被占用就自动加 1，直到找到空闲端口，并将选定端口写入 `.env` 的 `PORT`。
 - **独立安装的 Codex CLI（关键）**：必须安装并登录独立的 `@openai/codex` CLI（例如通过 npm 全局安装），并确保处于当前桌面登录用户下运行。
   - **Windows 特别注意**：不要指向 Codex 桌面客户端自带的内置 `codex.exe`（后台只读可通，但执行写文件沙箱时可能报 `app runtime provisioning service is unavailable`）；同时若配置开机自启，计划任务必须使用**当前桌面登录账户**，禁止使用 `SYSTEM` 账户（会读错 `CODEX_HOME`）。
   - **会话同步**：独立 CLI 与 Codex 桌面客户端共用当前用户的 `CODEX_HOME`，通过 Gemini 创建的持久线程会同步出现在桌面侧边栏中（默认带 `[Gem]` 或 `[Gem][Fork]` 前缀）。
 
-### 4. 模型档位、项目列表与协作规则由你自行定义与维护
-本仓库**不绑定固定模型名、固定项目目录或单一协作风格**，所有个性化配置均保存在本地忽略文件中：
-- **`config/profiles.json`**：映射 `default` / `coding` / `probe` / `review` / `deep_review` / `reasoning` 等语义档位。不同订阅方案可见的模型及推理强度各不相同，**部署时由 Codex 动态探测你账号的真实 `model/list` 并给出组合建议**。
-- **`config/repos.json`**：白名单声明暴露给 Gemini 的本地项目目录、简称与备注，以及默认归属项目（`DEFAULT_REPO`）。
-- **`config/gemini-instructions.md`**：热加载的协作工作流规则（硬上限 6,000 字符），涵盖审辩汇报、无感评审、分叉策略、文案主权与轮询护栏，你可以随时按个人习惯微调。
+### 4. 模型档位、项目列表与协作规则
+
+- **`config/profiles.json`** 定义 `default`、`coding`、`probe`、`review` 和 `deep_review` 五个档位。部署时，Codex 根据当前账号的 `model/list` 推荐模型和推理强度。基准推荐支持代际自动替换，可采用当前可用、定位相同且更合适的新一代模型。
+- **`config/repos.json`** 声明允许 Gemini 访问的本地项目目录、简称和备注。`.env` 中的 `DEFAULT_REPO` 指定默认项目。
+- **`config/gemini-instructions.md`** 是由 Git 追踪的系统前置规则，随版本自动更新。
+- **`config/user-instructions.md`** 是 Git 忽略的本地个人规则，可以从 [模板](config/user-instructions.example.md) 复制并按需编辑。服务会在系统规则后附加个人规则，合并后的上限为 6,000 字符。
 
 ### 5. 文件与多模态边界
 - **上传文件局限**：你在 Gemini 网页端直接上传的原始图片、PDF、表格等非纯文本文件，Gemini 只能理解其内容，**无法把原始二进制写入你本地磁盘**。若需要 Codex 修改原件，请先把文件放进对应项目目录再告知路径。
@@ -54,6 +56,14 @@ Gemini 网页端需要通过公网 HTTPS 访问本机的 `/mcp/v1` 与 OAuth 端
 ```
 
 完整部署流程见 [DEPLOY_PROMPT.md](DEPLOY_PROMPT.md)，绑定完成后按 [GEMINI-ACCEPTANCE.md](GEMINI-ACCEPTANCE.md) 在 Gemini 网页端做一次全链路验收。
+
+### 检查更新与排查问题
+
+升级或遇到问题时，可查阅 [VERSION_MANUAL.md](VERSION_MANUAL.md)，也可直接把下面这句话发给本机 Codex。
+
+```text
+请查看 GitHub 上 pernalin9/codex-remote-mcp 最新的 VERSION_MANUAL.md，对比我本机的 codex-remote-mcp 版本并核对已知问题，如有更新或需要注意的环境坑点请提示我并引导处理。
+```
 
 ---
 
