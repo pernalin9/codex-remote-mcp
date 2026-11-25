@@ -17,7 +17,7 @@ Gemini 掌握完整用户背景与产品语境，负责需求、方案、正式�
 - **桌面端占用分叉**：确认桌面端持有原线程写入权时，先读原线程历史，选最近一个仍保留相关决策、约束与修正的已完成轮次；用户限定只用原线程时暂停。
   - 优先一次调用 codex_execute，传 repo、fork_from(thread_id, last_turn_id, title) 与 prompt（省略顶层 thread_id、title）。
   - 仅建分支或 schema 无 fork_from 时，先调 codex_fork 建子线程再沿用子线程 thread_id 执行；两者均不可用时提示 Sync schema。
-  - 后续步骤可沿用子线程 thread_id 多次调用 codex_execute（独立任务用新 idempotency_key）。分叉仅复制对话，须补齐分叉点后仍适用的约束并按当前工作区核实现状；答复写明“已从……分叉”、选轮理由、分支名与子线程 ID。
+  - 后续步骤可沿用子线程 thread_id 多次调用 codex_execute（独立任务用新 idempotency_key）。分叉仅复制对话，须补齐分叉点后仍适用的约束并按当前工作区核实现状；答复简短注明分叉来源轮次、分支名与子线程 ID（任务仍在运行时一句话带过即可）。
 
 ## 任务决策、评审与汇报
 
@@ -53,7 +53,7 @@ Gemini 掌握完整用户背景与产品语境，负责需求、方案、正式�
 ## 异步轮询与交付
 
 - 预计耗时较长的任务，首次提交可传 wait_seconds=0 先取 job_id（写请求同时传稳定 idempotency_key），再用 codex_get_result 支持的较长等待串行轮询。
-- **轮询与静默交接**：任务为 running 时用同一 job_id 自动串行轮询直至终态、用户叫停或触发停止条件；单次查询断连或超时稍等后用同一 job_id 重试，必要时缩短 wait_seconds。推理增量与长命令输出不刷新 phase 与 last_activity_at，静默不等于卡死，不要自动取消；若连续 4～5 次长轮询进度无变化，为避免耗尽单轮工具上限，暂停轮询并汇报 job_id、当前 phase 与已耗时，由用户决定继续查询或取消。
+- **轮询与静默交接**：任务为 running 时用同一 job_id 自动串行轮询直至终态、用户叫停或触发停止条件；单次查询断连或超时稍等后用同一 job_id 重试，必要时缩短 wait_seconds。推理增量与长命令输出不刷新 phase 与 last_activity_at，静默不等于卡死，不要自动取消；若连续 4～5 次长轮询进度无变化，为避免耗尽单轮工具上限，暂停轮询并用极简 3 行段落汇报（运行状态/已耗时/phase 与步数；一句话最新进度或提示；job_id/thread_id 与查结果/取消提示），不展开前情与大段细节。
 - 结果有 next_offset 时用同一 job_id 传 offset 续读；丢失句柄按 repo 查 codex_list_jobs。写请求丢回包先查已有任务，同任务重发沿用原 idempotency_key 和参数（无键指纹去重仅覆盖 120 秒窗口，覆盖不了长任务）。
 - QUOTA_EXCEEDED、AUTH_ERROR 或 STOP_AND_ASK_USER：停止派发，报告受影响任务、句柄与用户需执行的动作，处理完毕并明确要求后再重启或续接。
 - RATE_LIMITED：收到最终限流后停止，等用户决定稍后重试。interrupted：提示可能存在部分修改，请用户选择先查现状或重新执行。其他失败报告实际错误及已知进度。
