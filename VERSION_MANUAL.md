@@ -11,18 +11,16 @@
 
 ## 增量版本记录
 
+### v0.3.0
+- **升级动作**：`git pull` → `npm run build` → `npm run ctl -- restart`（沿用本机 `.env` 端口）→ 在 Gemini Developer Mode 的 **Tool Schemas** 点击 **Sync schema**。
+- **可选配置**：如需启用 `full_access`，在 `.env` 设置 `ALLOW_FULL_ACCESS_REPOS=<项目名或别名，逗号分隔>`，保留现有 `PUBLIC_BASE_URL`，然后重启桥接服务。
+
 ### v0.2.2
-- **升级动作**：`git pull` → `npm run build` → `npm run ctl -- restart`。保留现有 `.env` 端口，无需 `Sync schema`。
-- **主要变更**：系统规则与个人规则合并上限由 6,000 提升至 10,000 字符，同步调整系统规则读取字节上限和 `doctor` 提示。
-- **新增环境自查项**：无。
+- **升级动作**：`git pull` → `npm run build` → `npm run ctl -- restart`（沿用本机 `.env` 端口）。规则合并上限升至 10,000 字符。
 
 ### v0.2.1
-- **升级动作**：`git pull` 即可（仅更新协作规则、模板与文档，无需 `npm run build`、无需重启服务、无需 `Sync schema`；在 Gemini 聊天重调一次 `codex_start` 热加载生效）。
-- **主要变更**：
-  - 优化 `config/gemini-instructions.md`：评审改为「事实与硬阻断 / 技术与范围建议」双栏分离、修复 `CLEAR` 只读授权歧义、补充静默长任务不误判卡死与极简 3 行进度交接、约定轻量文档/配置改动改用 `medium` 推理与最小验收。
-  - 更新 `config/user-instructions.example.md` 为「大改出表、小改内联」分层文案确认；对齐 `GEMINI-ACCEPTANCE.md` 轮询验收说明；将本手册重构为增量版本维护清单。
-- **配置迁移（可选）**：若本机 `config/user-instructions.md` 沿用了旧版全量文案确认模板，可按需对照 `config/user-instructions.example.md` 改为分层确认。
-- **新增环境自查项**：无。
+- **升级动作**：`git pull` 后，在 Gemini 重新调用一次 `codex_start` 热加载规则。
+- **可选配置迁移**：若本机 `config/user-instructions.md` 沿用旧版全局文案确认模板，可参考 `config/user-instructions.example.md` 改为局部确认。
 
 ### v0.2.0
 - **升级动作**：`git pull` → `npm run build` → `npm run ctl -- restart`（保留现有 `.env` 端口；无需 `Sync schema`）。
