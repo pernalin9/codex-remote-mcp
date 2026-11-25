@@ -51,7 +51,7 @@ export function createApp(db: DatabaseSync, base: string, review: Reviewer, star
         if (Buffer.byteLength(JSON.stringify(response),"utf8")>126*1024) throw new Error("START_RESPONSE_TOO_LARGE");
         return response;
       } catch(err) {
-        const code=err instanceof Error && /^(UNKNOWN_REPO|EMPTY_WORKFLOW_RULES|WORKFLOW_RULES_OVER_6000|START_RESPONSE_TOO_LARGE)$/.test(err.message)
+        const code=err instanceof Error && /^(UNKNOWN_REPO|EMPTY_WORKFLOW_RULES|WORKFLOW_RULES_OVER_10000|START_RESPONSE_TOO_LARGE)$/.test(err.message)
           ? err.message : "START_CONFIG_UNAVAILABLE";
         return {isError:true,content:[{type:"text",text:JSON.stringify({error:code})}]};
       }

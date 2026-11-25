@@ -11,6 +11,11 @@
 
 ## 增量版本记录
 
+### v0.2.2
+- **升级动作**：`git pull` → `npm run build` → `npm run ctl -- restart`。保留现有 `.env` 端口，无需 `Sync schema`。
+- **主要变更**：系统规则与个人规则合并上限由 6,000 提升至 10,000 字符，同步调整系统规则读取字节上限和 `doctor` 提示。
+- **新增环境自查项**：无。
+
 ### v0.2.1
 - **升级动作**：`git pull` 即可（仅更新协作规则、模板与文档，无需 `npm run build`、无需重启服务、无需 `Sync schema`；在 Gemini 聊天重调一次 `codex_start` 热加载生效）。
 - **主要变更**：

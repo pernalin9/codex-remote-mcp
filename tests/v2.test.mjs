@@ -146,11 +146,11 @@ test("workflow rules merge optional user rules and hot reload file changes",asyn
   fs.writeFileSync(userFile,"Other");
   assert.equal(rules(),untitledPrefix+"Other");
 
-  const userAtLimit="😀".repeat(6000-[...untitledPrefix].length);
+  const userAtLimit="😀".repeat(10000-[...untitledPrefix].length);
   fs.writeFileSync(userFile,userAtLimit);
-  assert.equal([...rules()].length,6000);
+  assert.equal([...rules()].length,10000);
   fs.writeFileSync(userFile,userAtLimit+"!");
-  assert.throws(rules,/WORKFLOW_RULES_OVER_6000/);
+  assert.throws(rules,/WORKFLOW_RULES_OVER_10000/);
 
   fs.unlinkSync(userFile);
   assert.deepEqual(readWorkflowRules(),{text:system,userLoaded:false});

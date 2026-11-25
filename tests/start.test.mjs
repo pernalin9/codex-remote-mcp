@@ -10,14 +10,14 @@ test("workflow rules preserve raw text, reload same-size edits, fail closed and 
   const dir=mkdtempSync(path.join(tmpdir(),"gemini-rules-"));
   const name=path.join(dir,"rules.md");
   t.after(()=>rmSync(dir,{recursive:true,force:true}));
-  const read=hotFile(pathToFileURL(name),parseRules,24000);
+  const read=hotFile(pathToFileURL(name),parseRules,40000);
   writeFileSync(name,"a\r\n");
   assert.equal(read(),"a\r\n");
   writeFileSync(name,"b\r\n"); utimesSync(name,1,1);
   assert.equal(read(),"b\r\n");
-  writeFileSync(name,"界".repeat(6001));
-  assert.throws(read,/OVER_6000/);
-  writeFileSync(name,"🌱".repeat(6000));
-  assert.equal([...read()].length,6000);
+  writeFileSync(name,"界".repeat(10001));
+  assert.throws(read,/OVER_10000/);
+  writeFileSync(name,"🌱".repeat(10000));
+  assert.equal([...read()].length,10000);
 });
 

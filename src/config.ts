@@ -24,12 +24,12 @@ export function hotFile<T>(file: URL, parse: (input: string)=>T, maxBytes = 128 
 }
 export function parseRules(raw: string) {
   if (!raw.trim()) throw new Error("EMPTY_WORKFLOW_RULES");
-  if ([...raw].length > 6000) throw new Error("WORKFLOW_RULES_OVER_6000");
+  if ([...raw].length > 10000) throw new Error("WORKFLOW_RULES_OVER_10000");
   return raw;
 }
 
 const userRulesHeading = "# 以下为用户自定义规则";
-const systemRules = hotFile(new URL("../config/gemini-instructions.md",import.meta.url),parseRules,24000);
+const systemRules = hotFile(new URL("../config/gemini-instructions.md",import.meta.url),parseRules,40000);
 const userRules = hotFile(new URL("../config/user-instructions.md",import.meta.url),raw=>raw);
 
 export function readWorkflowRules() {

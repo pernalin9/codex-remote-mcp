@@ -131,6 +131,6 @@ check("config/profiles.json",()=>Object.keys(profiles()).length+" profiles.",
 check("config/gemini-instructions.md + config/user-instructions.md",()=>{
   const {text,userLoaded}=readWorkflowRules();
   const userStatus=userLoaded ? "loaded" : "skipped (missing or blank)";
-  return "System rules loaded; optional user rules "+userStatus+". Combined: "+[...text].length+" / 6000 characters.";
-},"Check that the required system rules are nonempty, the optional user rules are readable if present, and the combined rules have at most 6000 characters.");
+  return "System rules loaded; optional user rules "+userStatus+". Combined: "+[...text].length+" / 10000 characters.";
+},"Check that the required system rules are nonempty, the optional user rules are readable if present, and the combined rules have at most 10000 characters.");
 await Promise.all([inspectCodex(),inspectPort()]);

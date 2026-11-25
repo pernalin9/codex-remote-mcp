@@ -39,7 +39,7 @@ Gemini 网页端需要通过公网 HTTPS 访问本机的 `/mcp/v1` 与 OAuth 端
 - **`config/profiles.json`** 定义 `default`、`coding`、`probe`、`review` 和 `deep_review` 五个档位。部署时，Codex 根据当前账号的 `model/list` 推荐模型和推理强度。基准推荐支持代际自动替换，可采用当前可用、定位相同且更合适的新一代模型。
 - **`config/repos.json`** 声明允许 Gemini 访问的本地项目目录、简称和备注。`.env` 中的 `DEFAULT_REPO` 指定默认项目。
 - **`config/gemini-instructions.md`** 是由 Git 追踪的系统前置规则，随版本自动更新。
-- **`config/user-instructions.md`** 是 Git 忽略的本地个人规则，可以从 [模板](config/user-instructions.example.md) 复制并按需编辑。服务会在系统规则后附加个人规则，合并后的上限为 6,000 字符。
+- **`config/user-instructions.md`** 是 Git 忽略的本地个人规则，可以从 [模板](config/user-instructions.example.md) 复制并按需编辑。服务会在系统规则后附加个人规则，合并后的上限为 10,000 字符。
 
 ### 5. 文件与多模态边界
 - **上传文件局限**：你在 Gemini 网页端直接上传的原始图片、PDF、表格等非纯文本文件，Gemini 只能理解其内容，**无法把原始二进制写入你本地磁盘**。若需要 Codex 修改原件，请先把文件放进对应项目目录再告知路径。
