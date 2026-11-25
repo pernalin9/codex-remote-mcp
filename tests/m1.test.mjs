@@ -40,8 +40,16 @@ test("bounded files, search, junction and attachment budgets",t=>{
   assert.throws(()=>writeFile(root,"../escape","x"));
   for(let i=0;i<2;i++)assert.equal(writeFile(root,"nested/a","v"+i).size_bytes,2);
   assert.throws(()=>writeFile(root,"nested/a","x",false));
-  const hand=path.join(root,".ai-handoff");fs.renameSync(hand,path.join(root,"saved"));
-  fs.symlinkSync(os.tmpdir(),hand,"junction");assert.throws(()=>writeFile(root,"x","a"));fs.unlinkSync(hand);
+  const junctionProject=path.join(root,"junction-project");
+  const junctionTarget=path.join(root,"junction-target");
+  fs.mkdirSync(junctionProject);
+  fs.mkdirSync(junctionTarget);
+  const hand=path.join(junctionProject,".ai-handoff");
+  fs.symlinkSync(junctionTarget,hand,"junction");
+  try {
+    assert.throws(()=>writeFile(junctionProject,"x","a"),/invalid_path/);
+    assert.equal(fs.existsSync(path.join(junctionTarget,"x")),false);
+  } finally {fs.unlinkSync(hand);}
   put("long","A".repeat(18001));
   const marks=["a.txt","a.txt",".env","long",...Array.from({length:10},(_,i)=>"f"+i)];
   for(const f of marks.slice(4))put(f,"x");

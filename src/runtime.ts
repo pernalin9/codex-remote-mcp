@@ -6,15 +6,32 @@ import { acquireLocalLock, isLocalLockHeld } from "./local-lock.js";
 
 export const projectRoot = fileURLToPath(new URL("../",import.meta.url));
 export const envFile = path.join(projectRoot,".env");
+const envFileKeys = new Set<string>();
 
 export function loadBridgeEnv() {
   try {
+    const inherited = new Set(Object.keys(process.env));
     process.loadEnvFile(envFile);
+    for (const key of Object.keys(process.env)) if (!inherited.has(key)) envFileKeys.add(key);
     return true;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error("Unable to load the project .env.");
     return false;
   }
+}
+
+export function bridgeChildEnv() {
+  return Object.fromEntries(Object.entries(process.env).filter(([key])=>!envFileKeys.has(key)));
+}
+
+export function sandboxTempDirectory() {
+  const directory = path.join(dataDirectory(),"sandbox-tmp");
+  mkdirSync(directory,{recursive:true,mode:0o700});
+  const real = realpathSync.native(directory);
+  if (path.relative(realpathSync.native(dataDirectory()),real)!=="sandbox-tmp") {
+    throw new Error("INVALID_SANDBOX_TEMP_DIRECTORY");
+  }
+  return real;
 }
 
 export function bridgePort() {

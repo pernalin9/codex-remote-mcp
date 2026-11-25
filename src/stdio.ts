@@ -14,8 +14,12 @@ export interface Rpc {
   onNotice(fn:(notice:Notice)=>void):void;
   until<T>(work:Promise<T>):Promise<T>;
 }
-function openServer(exe:string,cwd:string) {
+function openServer(exe:string,cwd:string,sandboxTmp?:string) {
   const env={...process.env};
+  if(sandboxTmp){
+    for(const key of Object.keys(env)) if(/^(TEMP|TMP|TMPDIR)$/i.test(key))delete env[key];
+    Object.assign(env,{TEMP:sandboxTmp,TMP:sandboxTmp,TMPDIR:sandboxTmp});
+  }
   delete env.OWNER_ADMIN_PASSWORD;
   delete env.OAUTH_STATIC_CLIENT_SECRET;
   // Independent CLI subprocesses use their installed sandbox helpers and the
@@ -89,7 +93,7 @@ function openServer(exe:string,cwd:string) {
       const timer=setTimeout(()=>fail("APP_SERVER_TIMEOUT"),timeoutMs);
       try {
         if(!initialized){
-          await request("initialize",{clientInfo:{name:"codex_remote_mcp",title:"Gemini Codex Bridge",version:"0.2.0"},capabilities:null} satisfies InitializeParams);
+          await request("initialize",{clientInfo:{name:"codex_remote_mcp",title:"Gemini Codex Bridge",version:"0.3.0"},capabilities:null} satisfies InitializeParams);
           notify({method:"initialized",params:{}});initialized=true;
         }
         return await run({request,notify,onNotice:fn=>{listener=fn;},until:work=>Promise.race([work,failed.promise])});
@@ -134,13 +138,13 @@ function authStamp(){
   catch{return "absent";}
 }
 let authVersion:string|undefined;
-export async function withTurnServer<T>(exe:string,cwd:string,signal:AbortSignal|undefined,timeoutMs:number,run:(rpc:Rpc)=>Promise<T>){
+export async function withTurnServer<T>(exe:string,cwd:string,signal:AbortSignal|undefined,timeoutMs:number,run:(rpc:Rpc)=>Promise<T>,sandboxTmp?:string){
   const stamp=authStamp();
   if(stamp!==authVersion){authVersion=stamp;await resetCodexServers();}
-  const epoch=generation,key=JSON.stringify([exe,directoryKey(cwd)]);
+  const epoch=generation,key=JSON.stringify([exe,directoryKey(cwd),sandboxTmp]);
   const cached=[...idle].find(l=>l.key===key && l.server.healthy());
   if(cached){clearTimeout(cached.timer);idle.delete(cached);}
-  const server=cached?.server??openServer(exe,cwd);
+  const server=cached?.server??openServer(exe,cwd,sandboxTmp);
   try{return await server.use(signal,timeoutMs,run);}
   finally{
     if(epoch!==generation || !server.healthy())await server.close();

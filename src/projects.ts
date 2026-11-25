@@ -31,6 +31,19 @@ export function directoryKey(directory: string) {
   return diskPathKey(realpathSync.native(directory));
 }
 
+export function fullAccessProjects() {
+  const {byName}=projectCatalog();
+  const allowed=new Map<string,string>();
+  const unknown:string[]=[];
+  for(const label of (process.env.ALLOW_FULL_ACCESS_REPOS??"").split(/[,，]/).map(value=>value.trim()).filter(Boolean)){
+    const project=byName.get(repoLabel(label));
+    if(!project){unknown.push(label);continue;}
+    try {allowed.set(directoryKey(project.path),project.name);}
+    catch {unknown.push(label);}
+  }
+  return {allowed,unknown};
+}
+
 export function projectPath(name?: string) {
   const {byName,projects} = projectCatalog();
   const label = name ?? process.env.DEFAULT_REPO;

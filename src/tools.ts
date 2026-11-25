@@ -1,7 +1,7 @@
 import type {ThreadManagement} from "./thread-management.js";
 import type {McpServer} from "@modelcontextprotocol/sdk/server/mcp.js";
 import {z} from "zod";
-import {Jobs} from "./jobs.js";
+import {BridgePreflightError,Jobs} from "./jobs.js";
 import {fileError,listFiles,readFile,writeFile} from "./file-ops.js";
 import {projectPath} from "./projects.js";
 import type {StartTool,ProjectTool} from "./start.js";
@@ -19,13 +19,17 @@ function reply(value:unknown){
   return {content:[{type:"text" as const,text:JSON.stringify({job_id:r.job_id,thread_id:r.thread_id,status:r.status,path:r.path,truncated:true,error:"response_budget_exceeded",content:typeof r.content==="string"?r.content.slice(0,8192):undefined,final_response:typeof r.final_response==="string"?r.final_response.slice(0,8192):undefined})}]};
 }
 function safe<T>(fn:()=>T|Promise<T>){
-  return Promise.resolve().then(fn).then(reply).catch(e=>({isError:true,content:[{type:"text" as const,text:JSON.stringify({error:e instanceof Error && /^[A-Z_]+$/.test(e.message)?e.message:fileError(e)})}]}));
+  return Promise.resolve().then(fn).then(reply).catch(e=>({isError:true,content:[{type:"text" as const,text:JSON.stringify({
+    error:e instanceof Error && /^[A-Z_]+$/.test(e.message)?e.message:fileError(e),
+    reason:e instanceof BridgePreflightError?e.reason:undefined
+  })}]}));
 }
 function annotations(title:string,readOnlyHint:boolean,destructiveHint=false,idempotentHint=readOnlyHint,openWorldHint=false){
   return {title,readOnlyHint,destructiveHint,idempotentHint,openWorldHint};
 }
 function root(repo:string){const value=projectPath(repo);if(!value)throw Error("UNKNOWN_REPO");return value;}
-export function registerTools(server:McpServer,jobs:Jobs,start:StartTool,full:boolean,getProject:ProjectTool,manage:ThreadManagement){
+export function registerTools(server:McpServer,jobs:Jobs,start:StartTool,full:boolean,getProject:ProjectTool,manage:ThreadManagement,
+  restartBridge?:(force:boolean,key?:string)=>ReturnType<Jobs["restartBridge"]>){
   const input={
     prompt:z.string().trim().min(1).max(32768).describe("交给 Codex 的任务和验收要求。"),
     repo:repoName.optional().describe("项目全称或别名。续接时省略可按线程归属识别，新任务省略则使用默认项目。"),
@@ -57,13 +61,14 @@ export function registerTools(server:McpServer,jobs:Jobs,start:StartTool,full:bo
   const namedThread={repo:repoName,thread_id:threadId,title:z.string().trim().min(1).max(120).describe("线程的显示名称，最多 120 字符。")};
   server.registerTool("codex_fork",{description:"从选定的已完成轮次（含该轮）创建并命名持久分支。返回子线程 ID 供后续续接。",
     inputSchema:{...namedThread,last_turn_id:z.string().min(1).max(128).describe("作为分叉终点的已完成轮次 ID，分支包含该轮。")},annotations:annotations("从指定轮次分叉",true,false,false)},
-    (args,extra)=>safe(()=>{access();return manage.fork(args,extra.signal);}));
+    (args,extra)=>safe(()=>{access();return jobs.mutate(extra.signal,signal=>manage.fork(args,signal));}));
   server.registerTool("codex_rename_thread",{description:"更改指定项目中会话的显示名称。分支保留 [Gem][Fork] 前缀。",
     inputSchema:namedThread,annotations:annotations("重命名会话",true,false,true)},
-    (args,extra)=>safe(()=>{access();return manage.rename(args,extra.signal);}));
-  server.registerTool("codex_review",{description:"只读评审。一次性独立调查传 ephemeral=true，省略 thread_id，凭 job_id 取结果。",inputSchema:{...input,ephemeral:z.boolean().optional().describe("传 true 发起不保存线程的一次性评审，须省略 thread_id。")},annotations:annotations("只读评审",true,false,false,true)},args=>safe(()=>jobs.submit("review",args)));
+    (args,extra)=>safe(()=>{access();return jobs.mutate(extra.signal,signal=>manage.rename(args,signal));}));
+  server.registerTool("codex_review",{description:"只读评审。一次性独立调查传 ephemeral=true，省略 thread_id，凭 job_id 取结果。",inputSchema:z.object({...input,ephemeral:z.boolean().optional().describe("传 true 发起不保存线程的一次性评审，须省略 thread_id。")}).strict(),annotations:annotations("只读评审",true,false,false,true)},args=>safe(()=>jobs.submit("review",args)));
   server.registerTool("codex_execute",{description:"执行已授权的项目任务。需要从历史分叉并执行时，在同一次调用中传 fork_from。后续独立任务可多次执行，每次沿用返回的子线程 thread_id。",inputSchema:{
     ...input,
+    full_access:z.boolean().default(false).describe("默认 false。仅对白名单内的实际项目按需启用全权限沙箱，须获得用户明确授权。"),
     fork_from:z.object({
       thread_id:threadId.describe("分叉来源的父线程 ID。"),
       last_turn_id:z.string().min(1).max(128).describe("要包含的最后一个已完成轮次 ID。"),
@@ -75,11 +80,21 @@ export function registerTools(server:McpServer,jobs:Jobs,start:StartTool,full:bo
   server.registerTool("codex_get_result",{description:"查询阶段、最近活动和结果；传回 next_offset 续读。",inputSchema:{...id,wait_seconds:wait(50),offset:offset.describe("读取最终回复的后续页时传上一页 next_offset，默认 0。")},annotations:annotations("查询结果",true)},args=>safe(()=>jobs.get(args.job_id,args.wait_seconds,args.offset)));
   server.registerTool("codex_list_jobs",{description:"最近任务摘要，可按项目和线程过滤。",inputSchema:{repo:repoName.optional().describe("只返回此项目的任务，接受全称或别名。"),thread_id:threadId.optional().describe("只返回此线程的任务。"),limit:z.number().int().min(1).max(30).default(10).describe("最多返回的任务数，默认 10。")},annotations:annotations("最近任务",true)},args=>safe(()=>jobs.list(args.limit,args.thread_id,args.repo)));
   server.registerTool("codex_cancel_task",{description:"中止指定任务。",inputSchema:id,annotations:annotations("中止任务",true,true,false)},args=>safe(()=>{access();return jobs.cancel(args.job_id);}));
-  server.registerTool("codex_restart_server",{description:"重新握手并读取账号状态，force 可中止运行中的任务。",inputSchema:{force:z.boolean().default(false).describe("默认 false，存在运行中任务时返回 busy。传 true 先中止运行任务。")},annotations:annotations("重启服务",true,true,false)},args=>safe(()=>{access();return jobs.restart(args.force,async()=>{
-    const result=await start({include_rules:false});
-    if(result.runtime.app_server!=="reachable")throw Error("APP_SERVER_UNAVAILABLE");
-    return result.runtime;
-  });}));
+  server.registerTool("codex_restart_server",{description:"默认重启 Codex app-server 会话。scope=bridge 先隔离预检，再重启桥接主进程。",inputSchema:{
+    force:z.boolean().default(false).describe("默认 false，存在运行中任务时返回 busy。传 true 先中止运行任务。"),
+    scope:z.enum(["codex","bridge"]).default("codex").describe("默认 codex。bridge 重启桥接，重新加载 .env。"),
+    idempotency_key:str.optional().describe("重试同一次桥接重启时沿用此键。")
+  },annotations:annotations("重启服务",true,true,false)},args=>safe(async()=>{access();
+    if(args.scope==="bridge"){
+      if(!restartBridge)throw Error("BRIDGE_RESTART_UNAVAILABLE");
+      return restartBridge(args.force,args.idempotency_key);
+    }
+    return jobs.restart(args.force,async()=>{
+      const result=await start({include_rules:false});
+      if(result.runtime.app_server!=="reachable")throw Error("APP_SERVER_UNAVAILABLE");
+      return result.runtime;
+    });
+  }));
   server.registerTool("repo_list_files",{
     description:"按相对路径浏览项目目录，排除敏感项、链接和非普通文件。",
     inputSchema:{
@@ -106,7 +121,7 @@ export function registerTools(server:McpServer,jobs:Jobs,start:StartTool,full:bo
     content:z.string().max(1048576).describe("要保存的文本，使用 UTF-8，最多 1 MiB。"),
     overwrite:z.boolean().default(true).describe("默认允许覆盖。传 false 时已有目标会报错。")
   },annotations:annotations("写入交接文件",true,true,false)},a=>safe(()=>{
-    access();const dir=root(a.repo);jobs.assertFree(dir);return writeFile(dir,a.filename,a.content,a.overwrite);
+    access();jobs.assertMutable();const dir=root(a.repo);jobs.assertFree(dir);return writeFile(dir,a.filename,a.content,a.overwrite);
   }));
 }
 

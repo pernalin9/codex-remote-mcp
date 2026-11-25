@@ -4,7 +4,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { profiles, readWorkflowRules } from "./config.js";
 import { bridgeHealth } from "./instance.js";
-import { parseCatalog, repoLabel } from "./projects.js";
+import { fullAccessProjects, parseCatalog, repoLabel } from "./projects.js";
 import { bridgePort, codexExecutable, dataDirectory, loadBridgeEnv, projectRoot, publicOrigin } from "./runtime.js";
 import { withAppServer } from "./stdio.js";
 import type { GetAccountResponse } from "./generated/app-server-schema/v2/GetAccountResponse";
@@ -126,6 +126,14 @@ check("config/repos.json",()=>{
   }
   return projects.length+" readable project directories.";
 },"Fill config/repos.json with readable absolute project directories and check DEFAULT_REPO.");
+try {
+  const {allowed,unknown}=fullAccessProjects();
+  const enabled=[...allowed.values()].map(name=>JSON.stringify(name)).join(", ") || "none";
+  report(unknown.length?"WARN":"OK","ALLOW_FULL_ACCESS_REPOS",
+    "Enabled projects: "+enabled+"."+(unknown.length?" Unmatched or unavailable labels: "+unknown.map(label=>JSON.stringify(label)).join(", ")+".":""));
+}catch{
+  report("FAIL","ALLOW_FULL_ACCESS_REPOS","Check the project catalog.");
+}
 check("config/profiles.json",()=>Object.keys(profiles()).length+" profiles.",
   "Fill config/profiles.json with valid model IDs and reasoning settings, including default and coding.");
 check("config/gemini-instructions.md + config/user-instructions.md",()=>{

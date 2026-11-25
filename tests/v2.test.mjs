@@ -28,6 +28,13 @@ function fixture(t) {
 
 function runtimeFixture(t) {
   const f = fixture(t);
+  const tempData=path.join(f.home,"data");
+  const previousData=process.env.CODEX_BRIDGE_DATA_DIR;
+  process.env.CODEX_BRIDGE_DATA_DIR=tempData;
+  t.after(()=>{
+    if(previousData===undefined)delete process.env.CODEX_BRIDGE_DATA_DIR;
+    else process.env.CODEX_BRIDGE_DATA_DIR=previousData;
+  });
   const dist = path.join(f.home,"dist");
   const config = path.join(f.home,"config");
   const fallback = path.join(f.home,"Fallback");
@@ -46,7 +53,7 @@ function runtimeFixture(t) {
     fakeAppServer.toString()+')();';
   for (const root of [fallback,target]) fs.writeFileSync(path.join(root,"app-server"),fake);
   const module = name => import(pathToFileURL(path.join(dist,name+".js")).href);
-  return {...f,dist,repos,fallback,target,module,log:path.join(f.home,"requests.jsonl")};
+  return {...f,dist,repos,fallback,target,tempData,module,log:path.join(f.home,"requests.jsonl")};
 }
 
 function fakeAppServer() {
@@ -65,7 +72,7 @@ function fakeAppServer() {
   notices.on("line",line => {
     const req = JSON.parse(line);
     if(req.id===undefined)return;
-    fs.appendFileSync(path.join(home,"requests.jsonl"),JSON.stringify({cwd,...req})+"\n");
+    fs.appendFileSync(path.join(home,"requests.jsonl"),JSON.stringify({cwd,temp:[process.env.TEMP,process.env.TMP,process.env.TMPDIR],...req})+"\n");
     const reply = result => report({id:req.id,result});
     switch(req.method) {
       case "thread/read":
@@ -80,7 +87,10 @@ function fakeAppServer() {
         break;
       case "thread/resume":
       case "thread/start":
-        reply({thread:{id:threadId,cwd:req.params.cwd??target,status:{type:"idle"},name:"fixture"},cwd:req.params.cwd??target,model:"fixture"});
+        reply({thread:{id:threadId,cwd:req.params.cwd??target,status:{type:"idle"},name:"fixture"},cwd:req.params.cwd??target,model:"fixture",
+          sandbox:{type:fs.existsSync(path.join(home,"wrong-sandbox"))?"dangerFullAccess":{
+            "read-only":"readOnly","workspace-write":"workspaceWrite","danger-full-access":"dangerFullAccess"
+          }[req.params.sandbox]}});
         break;
       case "turn/start": {
         const turnId = "active", item = agent("界".repeat(240),"note","commentary");
@@ -314,6 +324,52 @@ test("execute uses automatic approval review and read-only review disables escal
     .map(r=>[r.method,r.params.approvalPolicy,r.params.approvalsReviewer]),expected);
 });
 
+test("full access follows the actual exposed thread root and workspace writes use private TEMP",async t=>{
+  const f=runtimeFixture(t);
+  const previous=process.env.ALLOW_FULL_ACCESS_REPOS;
+  t.after(()=>{
+    if(previous===undefined)delete process.env.ALLOW_FULL_ACCESS_REPOS;
+    else process.env.ALLOW_FULL_ACCESS_REPOS=previous;
+  });
+  const {createReviewer}=await f.module("app-server-client");
+  const {resetCodexServers}=await f.module("stdio");
+  const {fullAccessProjects}=await f.module("projects");
+  const {Jobs}=await f.module("jobs");
+  const run=createReviewer(process.execPath);
+  const db=new DatabaseSync(":memory:");
+  const jobs=new Jobs(db,run);
+  f.cleanups.push(async()=>{await jobs.shutdown();await resetCodexServers();db.close();});
+  const resume={prompt:"full access",thread_id:threadId,full_access:true,wait_seconds:5};
+  const requests=()=>fs.readFileSync(f.log,"utf8").trim().split("\n").map(line=>JSON.parse(line));
+  process.env.ALLOW_FULL_ACCESS_REPOS=" Fallback， missing, , ";
+  assert.deepEqual(fullAccessProjects().unknown,["missing"]);
+  await assert.rejects(jobs.submit("execute",resume),{message:"FULL_ACCESS_NOT_ALLOWED"});
+  assert.equal(requests().some(r=>r.method==="thread/resume" || r.method==="turn/start"),false);
+  process.env.ALLOW_FULL_ACCESS_REPOS=" ALIAS， Target ";
+  assert.deepEqual([...fullAccessProjects().allowed.values()],["Target"]);
+  await assert.rejects(jobs.submit("execute",{...resume,repo:"Fallback"}),{message:"THREAD_PROJECT_MISMATCH"});
+  const granted=await jobs.submit("execute",{...resume,idempotency_key:"same"});
+  assert.equal(granted.status,"completed");
+  await assert.rejects(jobs.submit("execute",{...resume,full_access:false,idempotency_key:"same"}),/IDEMPOTENCY_CONFLICT/);
+  const elevated=requests().find(r=>r.method==="thread/resume");
+  assert.equal(elevated.params.cwd,fs.realpathSync.native(f.target));
+  assert.equal(elevated.params.sandbox,"danger-full-access");
+  assert.equal(elevated.params.approvalPolicy,"on-request");
+  assert.equal(elevated.params.approvalsReviewer,"auto_review");
+  assert.deepEqual(requests().find(r=>r.method==="turn/start").params.sandboxPolicy,{type:"dangerFullAccess"});
+  await assert.rejects(jobs.submit("execute",{...resume,repo:"Fallback",thread_id:undefined}),/FULL_ACCESS_NOT_ALLOWED/);
+  await run({mode:"execute",repo:"Target",prompt:"workspace temp"});
+  const temp=fs.realpathSync.native(path.join(f.tempData,"sandbox-tmp"));
+  const workspace=requests().filter(r=>r.method==="turn/start").at(-1);
+  assert.deepEqual(workspace.temp,[temp,temp,temp]);
+  assert.deepEqual(workspace.params.sandboxPolicy,{type:"workspaceWrite",writableRoots:[fs.realpathSync.native(f.target),temp],
+    networkAccess:false,excludeTmpdirEnvVar:false,excludeSlashTmp:true});
+  await run({mode:"review",repo:"Target",prompt:"read only",full_access:true,network_access:true});
+  assert.deepEqual(requests().filter(r=>r.method==="turn/start").at(-1).params.sandboxPolicy,{type:"readOnly",networkAccess:true});
+  fs.writeFileSync(path.join(f.home,"wrong-sandbox"),"");
+  await assert.rejects(run({mode:"review",repo:"Target",prompt:"mismatch"}),/THREAD_SANDBOX_MISMATCH/);
+});
+
 test("deployment examples use port 9088 and the five recommended profiles",()=>{
   const example=name=>fs.readFileSync(new URL("../"+name,import.meta.url),"utf8");
   assert.match(example(".env.example"),/^PORT=9088$/m);
@@ -425,13 +481,11 @@ test("outline passes the app-server cursor and full history preserves the offset
   assert.equal(pages[2],"A".repeat(8000)+"\n\n");
 });
 
-test("MCP describes every parameter and caps submit and result waits independently",async t=>{
-  const f=runtimeFixture(t);
+async function mcpFixture(f,review,start=async()=>({}),ops){
   const {createApp}=await f.module("mcp");
   const db=new DatabaseSync(path.join(f.home,"api.sqlite"));
   const base="https://fixture.example", access=randomUUID(), grantId=randomUUID();
-  const app=createApp(db,base,async()=>({thread_id:threadId,final_response:"ok",truncated:false}),
-    async()=>({}),async()=>({}),{});
+  const app=createApp(db,base,review,start,async()=>({}),{},ops);
   db.prepare("INSERT INTO grants VALUES(?,?,?,?)")
     .run(grantId,"client",null,Math.floor(Date.now()/1000)+60);
   db.prepare("INSERT INTO m1_grants VALUES(?)").run(grantId);
@@ -455,6 +509,12 @@ test("MCP describes every parameter and caps submit and result waits independent
     assert.equal(response.status,200);
     return response.json();
   };
+  return rpc;
+}
+
+test("MCP describes every parameter and caps submit and result waits independently",async t=>{
+  const f=runtimeFixture(t);
+  const rpc=await mcpFixture(f,async()=>({thread_id:threadId,final_response:"ok",truncated:false}));
   const {result:{tools}}=await rpc("tools/list",{});
   assert.equal(tools.length,13);
   for(const {name,inputSchema} of tools){
@@ -469,7 +529,12 @@ test("MCP describes every parameter and caps submit and result waits independent
   assert.equal(schema("codex_get_result").wait_seconds.default,20);
   assert.equal(schema("codex_review").network_access.default,false);
   assert.equal(schema("codex_execute").network_access.default,false);
+  assert.equal(schema("codex_review").full_access,undefined);
+  assert.equal(schema("codex_execute").full_access.default,false);
   const call=(name,args)=>rpc("tools/call",{name,arguments:args});
+  assert.ok((await call("codex_review",{prompt:"fixture",full_access:true})).result.isError);
+  const denied=await call("codex_execute",{prompt:"fixture",full_access:true});
+  assert.equal(JSON.parse(denied.result.content[0].text).error,"FULL_ACCESS_NOT_ALLOWED");
   for(const name of ["codex_review","codex_execute"]){
     const rejected=await call(name,{prompt:"fixture",wait_seconds:26});
     assert.ok(rejected.result?.isError || rejected.error);
@@ -482,12 +547,113 @@ test("MCP describes every parameter and caps submit and result waits independent
   assert.ok(rejected.result?.isError || rejected.error);
 });
 
+test("bridge restart preserves codex scope and rolls back preflight failure, then drains, deduplicates and launches",async t=>{
+  const f=runtimeFixture(t);
+  const {BridgePreflightError}=await f.module("jobs");
+  const {bridgeRestartOperations}=await f.module("bridge-restart");
+  const hold=Promise.withResolvers(), entered=Promise.withResolvers(), preflight=Promise.withResolvers(), launched=Promise.withResolvers();
+  let probes=0, launches=0, aborted=false;
+  const runtime={app_server:"reachable"};
+  const receipts=bridgeRestartOperations(f.tempData);
+  const rpc=await mcpFixture(f,async(input,signal)=>{
+    if(input.prompt==="hold"){
+      signal.addEventListener("abort",()=>{aborted=true;hold.resolve();},{once:true});
+      await hold.promise;
+      signal.throwIfAborted();
+    }
+    return {thread_id:threadId,final_response:"ok",truncated:false};
+  },async()=>({runtime}),{
+    ...receipts,
+    async preflight(){
+      if(++probes===1)throw new BridgePreflightError("Fixture preflight failure.");
+      assert.ok(aborted);
+      entered.resolve();
+      await preflight.promise;
+    },
+    launch(){launches++;launched.resolve();}
+  });
+  f.cleanups.push(()=>{hold.resolve();preflight.resolve();});
+  const call=async(name,args)=>{
+    const {result}=await rpc("tools/call",{name,arguments:args});
+    return JSON.parse(result.content[0].text);
+  };
+  const restart=args=>call("codex_restart_server",args);
+  assert.deepEqual(await restart({}),{status:"restarted",runtime});
+  assert.deepEqual(await restart({scope:"codex"}),{status:"restarted",runtime});
+  assert.deepEqual(await restart({scope:"bridge",idempotency_key:"retry"}),{
+    error:"BRIDGE_PREFLIGHT_FAILED",reason:"Fixture preflight failure."
+  });
+  const job=await call("codex_execute",{repo:"Target",prompt:"hold",wait_seconds:0});
+  assert.deepEqual(await restart({scope:"bridge"}),{status:"busy",scope:"bridge",job_ids:[job.job_id]});
+  const pending=restart({scope:"bridge",force:true,idempotency_key:"retry"});
+  await entered.promise;
+  const duplicate=restart({scope:"bridge",force:true,idempotency_key:"retry"});
+  for(const [name,args] of [
+    ["codex_execute",{prompt:"new job"}],
+    ["codex_fork",{repo:"Target",thread_id:threadId,title:"child",last_turn_id:"old"}],
+    ["codex_rename_thread",{repo:"Target",thread_id:threadId,title:"name"}],
+    ["repo_write_file",{repo:"Target",filename:"handoff.md",content:"test"}],
+  ])assert.deepEqual(await call(name,args),{error:"SERVER_RESTARTING"});
+  assert.equal(launches,0);
+  assert.equal((await call("codex_get_result",{job_id:job.job_id})).status,"interrupted");
+  preflight.resolve();
+  const result=await pending;
+  assert.equal(result.status,"restarting");
+  assert.equal(result.preflight,"passed");
+  assert.deepEqual(await duplicate,result);
+  await launched.promise;
+  assert.deepEqual(bridgeRestartOperations(f.tempData).accepted("retry"),result);
+  assert.deepEqual(await restart({scope:"bridge",idempotency_key:"retry"}),result);
+  assert.equal(probes,2);
+  assert.equal(launches,1);
+});
+
+test("restart scheduling waits for HTTP finish and only runs once",async t=>{
+  const f=runtimeFixture(t);
+  const {EventEmitter}=await import("node:events");
+  const {afterHttpResponse}=await f.module("mcp");
+  const response=new EventEmitter();
+  let calls=0;
+  afterHttpResponse(response,()=>calls++);
+  assert.equal(calls,0);
+  response.emit("finish");
+  response.emit("finish");
+  assert.equal(calls,1);
+});
+
+test("compiled preflight reloads .env and keeps the configured data directory isolated",async t=>{
+  const f=runtimeFixture(t);
+  const envKeys=["PUBLIC_BASE_URL","PORT","CODEX_EXE","DEFAULT_REPO"];
+  const previous=Object.fromEntries(envKeys.map(key=>[key,process.env[key]]));
+  for(const key of envKeys)delete process.env[key];
+  t.after(()=>{for(const key of envKeys)if(previous[key]===undefined)delete process.env[key];else process.env[key]=previous[key];});
+  const envFile=path.join(f.home,".env");
+  const rules=path.join(f.home,"config","gemini-instructions.md");
+  const {loadBridgeEnv,bridgeChildEnv}=await f.module("runtime");
+  const {bridgeRestartOperations}=await f.module("bridge-restart");
+  process.env.CODEX_EXE=process.execPath;
+  fs.writeFileSync(rules,"Fixture workflow rules.");
+  fs.writeFileSync(envFile,"PUBLIC_BASE_URL=https://old.example\nPORT=19224\nDEFAULT_REPO=Missing\n");
+  loadBridgeEnv();
+  assert.equal(bridgeChildEnv().DEFAULT_REPO,undefined);
+  assert.equal(bridgeChildEnv().CODEX_EXE,process.execPath);
+  const ops=bridgeRestartOperations(f.tempData);
+  await assert.rejects(ops.preflight(),{message:"BRIDGE_PREFLIGHT_FAILED",reason:"Bridge configuration validation failed."});
+  fs.writeFileSync(envFile,"PUBLIC_BASE_URL=https://new.example\nPORT=19224\nDEFAULT_REPO=Target\n");
+  await ops.preflight();
+  assert.equal(fs.existsSync(f.tempData),false);
+  assert.ok(fs.readFileSync(f.log,"utf8").includes('"method":"model/list"'));
+});
+
 test("ctl manages its verified fixture and issues codes only through the private control channel",async t=>{
   const f=runtimeFixture(t);
   const data=path.join(f.home,"managed");
   const env={...process.env,CODEX_BRIDGE_DATA_DIR:data,PORT:"0",CODEX_EXE:process.execPath,
     PUBLIC_BASE_URL:"https://fixture.example"};
-  for(const key of Object.keys(env))if(/^OAUTH_STATIC_/i.test(key))delete env[key];
+  for(const key of Object.keys(env))if(/^(OAUTH_STATIC_|DEFAULT_REPO$)/i.test(key))delete env[key];
+  const envFile=path.join(f.home,".env");
+  fs.writeFileSync(envFile,"DEFAULT_REPO=Fallback\n");
+  fs.writeFileSync(path.join(f.home,"config","gemini-instructions.md"),"Fixture rules.");
   const ctl=(...args)=>new Promise((resolve,reject)=>{
     const child=spawn(process.execPath,[path.join(f.dist,"cli-ctl.js"),...args],{cwd:f.home,env,windowsHide:true});
     let stdout="",stderr="";
@@ -529,7 +695,38 @@ test("ctl manages its verified fixture and issues codes only through the private
   assert.match(logs,/service\.log/);
   assert.equal(logs.includes(code),false);
   assert.match(await run("restart"),/Bridge running \(PID \d+\)/);
-  assert.notEqual(readInstance(data).token,first.token);
+  const second=readInstance(data);
+  assert.notEqual(second.token,first.token);
+  const access=randomUUID(),grantId=randomUUID(),expires=Math.floor(Date.now()/1000)+60;
+  const db=new DatabaseSync(path.join(data,"oauth.sqlite"));
+  try {
+    db.prepare("INSERT INTO grants VALUES(?,?,?,?)").run(grantId,"client",null,expires);
+    db.prepare("INSERT INTO m1_grants VALUES(?)").run(grantId);
+    db.prepare("INSERT INTO access VALUES(?,?,?,?)").run(createHash("sha256").update(access).digest("base64url"),
+      grantId,env.PUBLIC_BASE_URL+"/mcp/v1",expires);
+  }finally{db.close();}
+  const bridgeRestart=async port=>{
+    const res=await fetch("http://127.0.0.1:"+port+"/mcp/v1",{
+      method:"POST",headers:{"content-type":"application/json",accept:"application/json, text/event-stream",
+        authorization:"Bearer "+access,"mcp-protocol-version":"2025-11-25"},
+      body:JSON.stringify({jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"codex_restart_server",
+        arguments:{scope:"bridge",idempotency_key:"restart-fixture"}}})
+    });
+    return JSON.parse((await res.json()).result.content[0].text);
+  };
+  fs.writeFileSync(envFile,"DEFAULT_REPO=Missing\n");
+  assert.equal((await bridgeRestart(second.port)).error,"BRIDGE_PREFLIGHT_FAILED");
+  assert.equal(readInstance(data).token,second.token);
+  fs.writeFileSync(envFile,"DEFAULT_REPO=Target\n");
+  const acknowledged=await bridgeRestart(second.port);
+  assert.equal(acknowledged.status,"restarting");
+  assert.equal(acknowledged.pid,second.pid);
+  const replacement=await eventually(async()=>{
+    const instance=readInstance(data);
+    return instance && instance.token!==second.token && await bridgeHealth(instance.port)==="bridge" && instance;
+  });
+  assert.deepEqual(await bridgeRestart(replacement.port),acknowledged);
+  assert.equal(readInstance(data).token,replacement.token);
   assert.match(await run("stop"),/Bridge stopped/);
   assert.equal(readInstance(data),undefined);
   assert.match(await run("status"),/Bridge is stopped/);

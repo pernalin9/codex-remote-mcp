@@ -1,7 +1,8 @@
 import { realpathSync } from "node:fs";
 import { RpcError, withAppServer, withTurnServer, type Rpc } from "./stdio.js";
 import { profiles } from "./config.js";
-import { projectPath, exposedDirectory } from "./projects.js";
+import { projectPath, exposedDirectory, directoryKey, fullAccessProjects } from "./projects.js";
+import { sandboxTempDirectory } from "./runtime.js";
 import { fileError, resolveLocalImages } from "./file-ops.js";
 import type { ThreadStartParams } from "./generated/app-server-schema/v2/ThreadStartParams";
 import type { ThreadResumeParams } from "./generated/app-server-schema/v2/ThreadResumeParams";
@@ -24,6 +25,7 @@ export interface Review {
   ephemeral?:boolean;
   local_images?:string[];
   network_access?:boolean;
+  full_access?:boolean;
   workspaceRoot?:string;
   imageIdentity?:ImageIdentity[];
   claim?:(cwd:string,thread?:string)=>void;
@@ -34,6 +36,7 @@ export interface Review {
 interface Result { turn_id?:string; cwd?:string; model_used?:string; thread_id: string; title?: string; final_response: string; truncated: boolean }
 export type Reviewer = ((input: Review, signal?: AbortSignal) => Promise<Result>) & {
   resolveThreadRoot?:(cwd:string,threadId:string,explicitRepo:boolean)=>Promise<string>;
+  authorizeFullAccess?:(cwd:string,threadId:string|null,explicitRepo:boolean)=>Promise<string>;
 };
 
 export class ReviewError extends Error {
@@ -46,9 +49,21 @@ export function createReviewer(executable: string): Reviewer {
     if (!cwd) throw new ReviewError("UNKNOWN_REPO");
     return review(executable,cwd,input,signal);
   };
-  run.resolveThreadRoot=(cwd,threadId,explicitRepo)=>
+  const resolveThreadRoot:NonNullable<Reviewer["resolveThreadRoot"]>=(cwd,threadId,explicitRepo)=>
     withAppServer(executable,cwd,undefined,10000,rpc=>readThreadRoot(rpc,threadId,explicitRepo?cwd:undefined));
+  run.resolveThreadRoot=resolveThreadRoot;
+  run.authorizeFullAccess=async(cwd,threadId,explicitRepo)=>{
+    const actual=threadId ? await resolveThreadRoot(cwd,threadId,explicitRepo) : cwd;
+    assertFullAccess(actual);
+    return actual;
+  };
   return run;
+}
+
+function assertFullAccess(cwd:string) {
+  if(!exposedDirectory(cwd) || !fullAccessProjects().allowed.has(directoryKey(cwd))) {
+    throw new ReviewError("FULL_ACCESS_NOT_ALLOWED");
+  }
 }
 
 async function readThreadRoot(rpc:Rpc,threadId:string,selected?:string){
@@ -63,6 +78,8 @@ async function review(executable: string, cwd: string, input: Review, signal?: A
   if (!Object.hasOwn(config,key)) throw new ReviewError("UNKNOWN_PROFILE");
   const model=input.model_override??config[key].model, effort=input.reasoning_effort??config[key].reasoningEffort;
   const write=input.mode==="execute";
+  const full=write && input.full_access===true;
+  const sandboxTmp=write && !full ? sandboxTempDirectory() : undefined;
   let actualModel=model;
   let threadId = input.thread_id, title = input.title;
   try { return await withTurnServer(executable,cwd,signal,30*60*1000,async rpc=>{
@@ -111,10 +128,12 @@ async function review(executable: string, cwd: string, input: Review, signal?: A
       const approvals = write
         ? {approvalPolicy:"on-request", approvalsReviewer:"auto_review"} as const
         : {approvalPolicy:"never"} as const;
-      const options = {model,config:{web_search:"cached"},sandbox:write?"workspace-write":"read-only",...approvals} as const;
       if (input.thread_id) {
-        cwd=await readThreadRoot(rpc,input.thread_id,input.repo || input.imageIdentity ? cwd : undefined);
+        cwd=await readThreadRoot(rpc,input.thread_id,input.repo || input.imageIdentity || full && input.workspaceRoot ? cwd : undefined);
       }
+      if(full)assertFullAccess(cwd);
+      const cwdKey=directoryKey(cwd);
+      const options = {model,config:{web_search:"cached"},sandbox:full?"danger-full-access":write?"workspace-write":"read-only",...approvals} as const;
       let images:ReturnType<typeof resolveLocalImages>=[];
       if(input.local_images?.length){
         try {
@@ -129,8 +148,12 @@ async function review(executable: string, cwd: string, input: Review, signal?: A
         : await request<ThreadStartResponse>("thread/start",{...options,cwd,ephemeral:input.ephemeral??false} satisfies ThreadStartParams);
       threadId = thread.thread.id;
       subscribed = true;
-      if(!exposedDirectory(thread.thread.cwd,cwd) || !exposedDirectory(thread.cwd,cwd)){
+      if(directoryKey(thread.thread.cwd)!==cwdKey || directoryKey(thread.cwd)!==cwdKey){
         throw new ReviewError("THREAD_PROJECT_MISMATCH",threadId);
+      }
+      const expected=full?"dangerFullAccess":write?"workspaceWrite":"readOnly";
+      if(thread.sandbox?.type && thread.sandbox.type!==expected){
+        throw new ReviewError("THREAD_SANDBOX_MISMATCH",threadId);
       }
       input.claim?.(thread.cwd,threadId);
       if (thread.thread.status.type === "active") throw new ReviewError("THREAD_BUSY",threadId);
@@ -144,11 +167,12 @@ async function review(executable: string, cwd: string, input: Review, signal?: A
       actualModel=thread.model;
       input.recordModel?.(actualModel);
       earlyNotices=[];
+      if(full)assertFullAccess(cwd);
       const networkAccess=Boolean(input.network_access);
       const start = await request<{turn:{id:string}}>("turn/start",{
         threadId,cwd,model,effort,...approvals,
-        sandboxPolicy:write
-          ? {type:"workspaceWrite",writableRoots:[cwd],networkAccess,excludeTmpdirEnvVar:true,excludeSlashTmp:true}
+        sandboxPolicy:full ? {type:"dangerFullAccess"} : sandboxTmp
+          ? {type:"workspaceWrite",writableRoots:[cwd,sandboxTmp],networkAccess,excludeTmpdirEnvVar:false,excludeSlashTmp:true}
           : {type:"readOnly",networkAccess},
         input:[{type:"text",text:input.prompt+"\n\nIf a file excerpt would help, optionally include [[ATTACH_FILE: relative/path:start-end]] on its own line.",text_elements:[]},
           ...images.map(({absolutePath})=>({type:"localImage" as const,path:absolutePath}))]
@@ -175,7 +199,7 @@ async function review(executable: string, cwd: string, input: Review, signal?: A
         }), new Promise(r=>setTimeout(r,1000))]);
       }
     }
-  }); } catch(err) {
+  },sandboxTmp); } catch(err) {
     if(err instanceof ReviewError) throw err;
     throw new ReviewError(err instanceof Error ? err.message : "REVIEW_FAILED",threadId,err instanceof RpcError ? err.code : undefined);
   }

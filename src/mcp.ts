@@ -1,5 +1,6 @@
 import type {ThreadManagement} from "./thread-management.js";
 import { fileURLToPath } from "node:url";
+import type { ServerResponse } from "node:http";
 import express from "express";
 import type { DatabaseSync } from "node:sqlite";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -7,11 +8,22 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { z } from "zod";
 import { installOAuth } from "./oauth.js";
 import type { StartTool, ProjectTool } from "./start.js";
-import {Jobs} from "./jobs.js";
+import {Jobs,type BridgeRestartOps} from "./jobs.js";
 import {registerTools} from "./tools.js";
 import { type Reviewer } from "./app-server-client.js";
 
-export function createApp(db: DatabaseSync, base: string, review: Reviewer, start: StartTool, getProject: ProjectTool, manage:ThreadManagement) {
+export function afterHttpResponse(res:ServerResponse,run:()=>void) {
+  if(res.writableFinished){queueMicrotask(run);return;}
+  const schedule=()=>{
+    clearTimeout(fallback);
+    res.off("finish",schedule);
+    run();
+  };
+  const fallback=setTimeout(schedule,3000);
+  res.once("finish",schedule);
+}
+
+export function createApp(db: DatabaseSync, base: string, review: Reviewer, start: StartTool, getProject: ProjectTool, manage:ThreadManagement,bridgeRestart?:BridgeRestartOps) {
   const app = express();
   const jobs=new Jobs(db,review,manage.fork);
   app.locals.jobs=jobs;
@@ -36,7 +48,7 @@ export function createApp(db: DatabaseSync, base: string, review: Reviewer, star
   app.get("/mcp/v1",(_req,res)=>{res.set("Allow","POST").sendStatus(405);});
   app.post("/mcp/v1",authorize,async(req,res)=>{
     if (req.headers.origin && req.headers.origin !== base) {res.sendStatus(403);return;}
-    const server = new McpServer({name:"codex-remote-mcp",version:"0.2.0",icons:[{src:base+"/codex-remote.png",mimeType:"image/png",sizes:["512x512"]}]},{
+    const server = new McpServer({name:"codex-remote-mcp",version:"0.3.0",icons:[{src:base+"/codex-remote.png",mimeType:"image/png",sizes:["512x512"]}]},{
       instructions:"新对话首次使用 @codex 时，必须先调用 codex_start 并加载规则（include_rules=true）。后续协作严格遵循本次返回的 workflow_rules。为当前 Gemini 聊天命名时，在标题开头加一次 [Codex] 和一个空格，后接简短的任务名。这个前缀仅用于 Gemini 聊天标题。"
     });
     server.registerTool("codex_start",{
@@ -56,7 +68,8 @@ export function createApp(db: DatabaseSync, base: string, review: Reviewer, star
         return {isError:true,content:[{type:"text",text:JSON.stringify({error:code})}]};
       }
     });
-    registerTools(server,jobs,start,Boolean(res.locals.fullGrant),getProject,manage);
+    registerTools(server,jobs,start,Boolean(res.locals.fullGrant),getProject,manage,bridgeRestart &&
+      ((force,key)=>jobs.restartBridge(force,key,bridgeRestart,run=>afterHttpResponse(res,run))));
     const transport = new StreamableHTTPServerTransport({sessionIdGenerator:undefined,enableJsonResponse:true});
     res.on("close",()=>{void server.close().catch(()=>{});});
     await server.connect(transport);

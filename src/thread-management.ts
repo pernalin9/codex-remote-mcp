@@ -39,10 +39,15 @@ export function threadManagement(exe:string) {
           if(!page.nextCursor) throw new Error("UNKNOWN_TURN");
           cursor=page.nextCursor;
         }
-        const {thread}=await rpc.request<ThreadForkResponse>("thread/fork",{
+        const fork=await rpc.request<ThreadForkResponse>("thread/fork",{
           threadId:input.thread_id,lastTurnId:input.last_turn_id,cwd,excludeTurns:true,ephemeral:false,
           sandbox:"read-only",approvalPolicy:"never",config:{web_search:"cached"}
         } satisfies ThreadForkParams);
+        const {thread}=fork;
+        if(!exposedDirectory(thread.cwd,cwd) || (fork.cwd && !exposedDirectory(fork.cwd,cwd))){
+          throw new Error("THREAD_PROJECT_MISMATCH");
+        }
+        if(fork.sandbox?.type && fork.sandbox.type!=="readOnly")throw new Error("THREAD_SANDBOX_MISMATCH");
         const result={parent_thread_id:input.thread_id,last_turn_id:input.last_turn_id,thread_id:thread.id};
         onCreated?.(thread.id);
         const title=branchTitle(input.title);

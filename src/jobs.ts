@@ -20,7 +20,9 @@ const partial="任务已中断，可能存在部分未完成修改。请先核�
 const signature=(fields:unknown[])=>createHash("sha256").update(JSON.stringify(fields)).digest("hex");
 export class Jobs {
   private live=new Map<string,{controller:AbortController;done:Promise<void>}>();
+  private mutations=new Set<{controller:AbortController;done:Promise<unknown>}>();
   private restarting=false;
+  private draining=false;
   private stopping=false;
   constructor(private db:DatabaseSync,private run:Reviewer,private fork?:ThreadManagement["fork"]){
     db.exec("CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, thread TEXT, root TEXT, mode TEXT,status TEXT,started INTEGER,ended INTEGER,idem TEXT UNIQUE, fingerprint TEXT,signature TEXT,result TEXT NOT NULL)");
@@ -57,20 +59,44 @@ export class Jobs {
   assertFree(root:string,id=""){
     if(this.db.prepare("SELECT id FROM jobs WHERE status='running' AND mode='execute' AND root=? AND id<>?").get(directoryKey(root),id))throw Error("REPO_BUSY");
   }
+  assertMutable(){
+    if(this.draining || this.stopping)throw Error("SERVER_RESTARTING");
+  }
+  private assertAccepting(){
+    this.assertMutable();
+    if(this.restarting)throw Error("SERVER_RESTARTING");
+  }
+  async mutate<T>(signal:AbortSignal,work:(signal:AbortSignal)=>T|Promise<T>){
+    this.assertMutable();
+    const controller=new AbortController();
+    const combined=AbortSignal.any([signal,controller.signal]);
+    const task={controller,done:Promise.resolve().then(()=>{
+      combined.throwIfAborted();
+      return work(combined);
+    })};
+    this.mutations.add(task);
+    try{return await task.done;}finally{this.mutations.delete(task);}
+  }
   async submit(mode:"review"|"execute",input:Input){
     const branch=input.fork_from;
     if(branch && (mode!=="execute" || !input.repo || input.thread_id || input.title || !this.fork))throw Error("INVALID_FORK_REQUEST");
     if(input.ephemeral && (mode!=="review" || input.thread_id))throw Error("EPHEMERAL_REQUIRES_NEW_REVIEW");
-    if(this.restarting || this.stopping)throw Error("SERVER_RESTARTING");
+    this.assertAccepting();
     let root=projectPath(input.repo);
     if(!root)throw Error("UNKNOWN_REPO");
     const thread=input.thread_id??null;
+    const fullAccess=mode==="execute" && input.full_access===true;
+    if(fullAccess){
+      if(!this.run.authorizeFullAccess)throw Error("FULL_ACCESS_NOT_ALLOWED");
+      root=await this.run.authorizeFullAccess(root,thread,Boolean(input.repo));
+      this.assertAccepting();
+    }
     let imageIdentity:Review["imageIdentity"];
     if(input.local_images?.length){
-      if(thread){
+      if(thread && !fullAccess){
         if(!this.run.resolveThreadRoot)throw Error("THREAD_ROOT_UNAVAILABLE");
         root=await this.run.resolveThreadRoot(root,thread,Boolean(input.repo));
-        if(this.restarting || this.stopping)throw Error("SERVER_RESTARTING");
+        this.assertAccepting();
       }
       imageIdentity=localImageIdentity(root,input.local_images);
     }
@@ -79,24 +105,27 @@ export class Jobs {
     const fingerprintFields:unknown[]=[rootKey,thread,input.prompt,...(imageIdentity?[imageIdentity]:[])];
     if(branch)fingerprintFields.push({fork:[branch.thread_id,branch.last_turn_id,branch.title]});
     const signatureFields=[input.model_override,input.reasoning_effort,input.profile,input.title];
-    const fp=signature([...fingerprintFields,networkAccess]);
-    const sig=signature([fp,...signatureFields,networkAccess]);
+    const fp=signature([...fingerprintFields,networkAccess,fullAccess]);
+    const sig=signature([fp,...signatureFields,networkAccess,fullAccess]);
     const key=input.idempotency_key??null;
     if(mode==="execute"){
       // Pre-v2 jobs always ran with terminal networking disabled.
-      const legacyFp=networkAccess ? null : signature(fingerprintFields);
+      const previousFp=fullAccess ? null : signature([...fingerprintFields,networkAccess]);
+      const legacyFp=networkAccess || fullAccess ? null : signature(fingerprintFields);
       const old=(key?this.db.prepare("SELECT * FROM jobs WHERE idem=?").get(key):
-        this.db.prepare("SELECT * FROM jobs WHERE fingerprint IN (?,?) AND mode='execute' AND started>? ORDER BY started DESC LIMIT 1")
-          .get(fp,legacyFp,start-120000)) as Row|undefined;
+        this.db.prepare("SELECT * FROM jobs WHERE fingerprint IN (?,?,?) AND mode='execute' AND started>? ORDER BY started DESC LIMIT 1")
+          .get(fp,previousFp,legacyFp,start-120000)) as Row|undefined;
       if(old){
-        if(key && old.signature!==sig && (legacyFp===null || old.signature!==signature([legacyFp,...signatureFields]))) {
+        if(key && old.signature!==sig &&
+          (previousFp===null || old.signature!==signature([previousFp,...signatureFields,networkAccess])) &&
+          (legacyFp===null || old.signature!==signature([legacyFp,...signatureFields]))) {
           throw Error("IDEMPOTENCY_CONFLICT");
         }
         return this.get(old.id,input.wait_seconds??20);
       }
     }
     if(thread && this.db.prepare("SELECT id FROM jobs WHERE status='running' AND thread=?").get(thread))throw Error("THREAD_BUSY");
-    const known=!thread||Boolean(input.repo)||Boolean(imageIdentity);
+    const known=!thread||Boolean(input.repo)||Boolean(imageIdentity)||fullAccess;
     if(mode==="execute" && known)this.assertFree(root);
     const action=branch?"fork":thread?"resume":input.ephemeral?"new_ephemeral":"new_persistent";
     const repo=known?repoForRoot(root):null;
@@ -165,7 +194,7 @@ export class Jobs {
   }
   async cancel(id:string){this.row(id);this.live.get(id)?.controller.abort();return this.get(id,5);}
   async restart(force:boolean,probe:()=>Promise<unknown>){
-    if(this.restarting || this.stopping)throw Error("SERVER_RESTARTING");
+    this.assertAccepting();
     if(this.live.size&&!force)return {status:"busy",job_ids:[...this.live.keys()]};
     this.restarting=true;
     try{
@@ -175,13 +204,63 @@ export class Jobs {
       return {status:"restarted",runtime:await probe()};
     }finally{this.restarting=false;}
   }
+  private bridgeRestart?:{key?:string;result:Promise<BridgeRestartResult>};
+  async restartBridge(force:boolean,key:string|undefined,ops:BridgeRestartOps,afterResponse:(run:()=>void)=>void){
+    // A retry during preflight waits for the original decision and never schedules another helper.
+    if(key && this.bridgeRestart?.key===key)return this.bridgeRestart.result;
+    if(key){
+      const accepted=ops.accepted?.(key);
+      if(accepted)return accepted;
+    }
+    this.assertAccepting();
+    if(!force && (this.live.size || this.mutations.size))return {status:"busy",scope:"bridge",job_ids:[...this.live.keys()]};
+    this.draining=true;
+    const result=this.prepareBridgeRestart(key,ops,afterResponse);
+    this.bridgeRestart={key,result};
+    return result;
+  }
+  private async prepareBridgeRestart(key:string|undefined,ops:BridgeRestartOps,afterResponse:(run:()=>void)=>void):Promise<BridgeRestartResult>{
+    const tasks=[...this.live.values(),...this.mutations];
+    for(const task of tasks)task.controller.abort();
+    let forget:(()=>void)|undefined;
+    const undo=()=>{
+      this.bridgeRestart=undefined;
+      this.draining=false;
+      forget?.();
+    };
+    try{
+      await Promise.allSettled(tasks.map(task=>task.done));
+      await ops.preflight();
+      const result:BridgeRestartResult={status:"restarting",scope:"bridge",pid:process.pid,preflight:"passed",
+        message:"桥接预检通过，正在重启主进程，请等待数秒后调用 codex_start 验证。"};
+      if(key)forget=ops.remember?.(key,result);
+      afterResponse(()=>{void Promise.resolve().then(ops.launch).catch(error=>{
+        try{undo();}finally{console.error("Bridge restart helper did not start.",error instanceof Error?error.name:"Error");}
+      });});
+      return result;
+    }catch(error){
+      undo();
+      throw new BridgePreflightError(error instanceof BridgePreflightError ? error.reason : "Restart preparation failed.");
+    }
+  }
   async shutdown(){
     this.stopping=true;
-    const tasks=[...this.live.values()];
+    const tasks=[...this.live.values(),...this.mutations];
     for(const task of tasks)task.controller.abort();
     await Promise.allSettled(tasks.map(task=>task.done));
     await resetCodexServers();
   }
+}
+
+export type BridgeRestartResult={status:"restarting";scope:"bridge";pid:number;preflight:"passed";message:string};
+export interface BridgeRestartOps {
+  preflight():Promise<void>;
+  launch():void|Promise<void>;
+  accepted?(key:string):BridgeRestartResult|undefined;
+  remember?(key:string,result:BridgeRestartResult):()=>void;
+}
+export class BridgePreflightError extends Error {
+  constructor(readonly reason:string){super("BRIDGE_PREFLIGHT_FAILED");}
 }
 
 function localImageIdentity(root:string,files:readonly string[]){

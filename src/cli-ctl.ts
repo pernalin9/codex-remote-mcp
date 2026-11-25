@@ -3,7 +3,7 @@ import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readSync } from 
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { bridgeHealth, callInstance, clearInstanceRecord, readInstance, verifiedInstance } from "./instance.js";
-import { bridgePort, dataDirectory, dataDirectoryLocked, loadBridgeEnv, lockDataDirectory, projectRoot } from "./runtime.js";
+import { bridgeChildEnv, bridgePort, dataDirectory, dataDirectoryLocked, loadBridgeEnv, lockDataDirectory, projectRoot } from "./runtime.js";
 
 const usage="npm run ctl -- start|stop|restart|status|logs [--lines|-n N]|copy-code <connection-id>";
 const logNames=["service.log","service-error.log"];
@@ -32,7 +32,7 @@ async function start(data:string,port:number) {
   try{
     for(const file of logs)descriptors.push(openSync(file,"a",0o600));
     child=spawn(process.execPath,[entry],{
-      cwd:projectRoot,detached:true,windowsHide:true,stdio:["ignore",descriptors[0],descriptors[1]]
+      cwd:projectRoot,env:bridgeChildEnv(),detached:true,windowsHide:true,stdio:["ignore",descriptors[0],descriptors[1]]
     });
   }finally{for(const fd of descriptors)closeSync(fd);}
   let failed=false;
@@ -49,8 +49,9 @@ async function start(data:string,port:number) {
   for(const file of logs)console.log(file);
 }
 
-async function stop(data:string,port:number,allowAbsent=false) {
+async function stop(data:string,port:number,allowAbsent=false,expectedPid?:number) {
   const active=await verifiedInstance(data);
+  if(expectedPid!==undefined && active?.entry.pid!==expectedPid)throw new Error("Restart source bridge has changed.");
   if(!active){
     if(dataDirectoryLocked(data) || await bridgeHealth(port)==="bridge"){
       throw new Error("Bridge process ownership could not be verified. Use its original service manager.");
@@ -153,13 +154,23 @@ async function copyApprovalCode(data:string,requestId:string) {
 
 try {
   const [action,...options]=process.argv.slice(2);
+  const from=action==="restart" && options[0]==="--bridge-from";
   if(!["start","stop","restart","status","logs","copy-code"].includes(action) ||
-    (options.length && action!=="logs" && action!=="copy-code"))throw new Error(usage);
+    (options.length && action!=="logs" && action!=="copy-code" && !from))throw new Error(usage);
   if(action==="copy-code" && (options.length!==1 || !/^[a-f0-9]{12}$/i.test(options[0])))throw new Error(usage);
   loadBridgeEnv();
   const data=dataDirectory(),port=bridgePort();
   if(action==="start")await start(data,port);
-  if(action==="stop" || action==="restart")await stop(data,port,action==="restart");
+  if(from){
+    const [,oldData,pid]=options;
+    if(options.length!==3 || !path.isAbsolute(oldData) || !/^\d+$/.test(pid))throw new Error(usage);
+    const source=await verifiedInstance(oldData);
+    if(source?.entry.pid!==Number(pid))throw new Error("Restart source bridge has changed.");
+    const dataChanged=path.relative(oldData,data)!=="";
+    if(dataChanged && dataDirectoryLocked(data))throw new Error("New data directory is already in use.");
+    if(port!==source.entry.port && await bridgeHealth(port)!=="free")throw new Error("New loopback port is already in use.");
+    await stop(oldData,source.entry.port,false,source.entry.pid);
+  }else if(action==="stop" || action==="restart")await stop(data,port,action==="restart");
   if(action==="restart")await start(data,port);
   if(action==="status")await status(data,port);
   if(action==="logs")logs(data,options);
