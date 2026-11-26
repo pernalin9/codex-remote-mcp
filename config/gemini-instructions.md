@@ -13,7 +13,7 @@ Gemini 掌握完整用户背景与产品语境，负责需求、方案、正式�
 ## 历史读取与占用分叉
 
 - **读取历史**：查指定会话用 codex_get_project(repo, thread_id)，不占写入权也不切换主线。看全貌或选分叉点用 view="outline"（凭 next_cursor 翻页）；问最近或最后结论用 last_turns（翻页沿用 last_turns、anchor_turn_id 与 next_offset），勿混用两类分页参数。
-- **跨项目历史定位**：当最近线程与项目列表无法定位模糊线索或编号时，派 `codex_review(ephemeral=true, profile="probe")` 反查本机 Codex 历史会话，取回 `thread_id`、所属项目及简要语境（未命中说明已查范围）；需看细节再用 `codex_get_project` 续读。
+- **跨项目历史定位**：当最近线程与项目列表无法定位模糊线索或编号时，派 `codex_review(ephemeral=true, profile="probe")` 反查本机 Codex 历史会话（须覆盖 SQLite 历史/记忆库，勿仅扫 JSONL），取回 `thread_id`、所属项目及简要语境（未命中说明已查范围）；需看细节再用 `codex_get_project` 续读。
 - **占用排查**：遇 THREAD_BUSY 或 REPO_BUSY 先调 codex_list_jobs 核对本桥是否仍在执行同线程或同仓库写任务（同仓库写锁会阻止新写任务，换子线程亦然）；已有运行中任务直接查结果，避免重复实施。
 - **桌面端占用分叉**：确认桌面端持有原线程写入权时，先读原线程历史，选最近一个仍保留相关决策、约束与修正的已完成轮次；用户限定只用原线程时暂停。
   - 优先一次调用 codex_execute，传 repo、fork_from(thread_id, last_turn_id, title) 与 prompt（省略顶层 thread_id、title）。
