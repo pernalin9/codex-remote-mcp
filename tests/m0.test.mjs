@@ -103,7 +103,7 @@ test("M0 OAuth discovery, Google callbacks, client authentication, revocation an
     const {tokens,tokenCall,revoke} = await link(origin,app.locals.issueApprovalCode,method);
     const init=await rpc(origin,tokens.access_token,"initialize",{protocolVersion:"2025-11-25",capabilities:{},clientInfo:{name:"probe",version:"1"}});
     assert.equal(init.protocolVersion,"2025-11-25");
-    assert.equal(init.serverInfo.version,"0.3.0");
+    assert.equal(init.serverInfo.version,"0.3.1");
     assert.ok(init.instructions.includes("[Codex]"));
     assert.equal(init.serverInfo.icons[0].src,issuer+"/codex-remote.png");
     const image=await fetch(origin+"/codex-remote.png");

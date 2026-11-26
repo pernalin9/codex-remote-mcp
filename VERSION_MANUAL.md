@@ -11,6 +11,10 @@
 
 ## 增量版本记录
 
+### v0.3.1
+- **升级动作**：使用 Cloudflare Named Tunnel 的 Windows 部署，已有 UUID 配置可直接沿用。将调用部署脚本的自启任务设为无参数的 `deploy/start-tunnel.ps1`；首次配置或修改域名、桥接端口时先执行 `deploy/start-tunnel.ps1 -Configure`。已按 UUID 直接运行连接器的自启任务可沿用。
+- **新增环境自查项**：检查日常启动和自启使用隧道 JSON；升级时保留已有账户证书。新部署仅在公网验收通过后清理本次新建的账户证书，尊重用户的保留要求。
+
 ### v0.3.0
 - **升级动作**：`git pull` → `npm run build` → `npm run ctl -- restart`（沿用本机 `.env` 端口）→ 在 Gemini Developer Mode 的 **Tool Schemas** 点击 **Sync schema**。
 - **可选配置**：如需启用 `full_access`，在 `.env` 设置 `ALLOW_FULL_ACCESS_REPOS=<项目名或别名，逗号分隔>`，保留现有 `PUBLIC_BASE_URL`，然后重启桥接服务。

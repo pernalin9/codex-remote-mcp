@@ -91,8 +91,11 @@
    - 全部通过时只说一句「本地桥接已启动并自检通过」，仅在失败时报错。
 
 2. **配置公网 HTTPS 入口**：
+   - 选择 Cloudflare Named Tunnel 时，先确认桌面用户和本次登录的账户证书路径（Windows 默认 `%USERPROFILE%\.cloudflared\cert.pem`，macOS 默认 `~/.cloudflared/cert.pem`），记录文件是否已存在。已有证书用于本次配置时原样保留。需要新登录时，待用户完成授权后在本机记录新证书的路径与 SHA-256，勿输出凭证内容。
    - 若需要我进行浏览器授权（如 `cloudflared tunnel login` 或 Tailscale 开启 Funnel），暂停并**只输出我要执行的命令与浏览器点击动作**。
    - 我完成后，静默完成隧道创建、自启配置与公网健康检查（失败才报错）。
+   - Windows 首次配置或变更域名、端口时运行 `deploy/start-tunnel.ps1 -Configure`。日常启动与登录自启均运行无参数的 `deploy/start-tunnel.ps1`。macOS 同样仅在配置阶段创建隧道与 DNS 路由，日常启动与自启使用 `cloudflared tunnel --config <配置文件> run <UUID>`。运行配置须引用隧道 UUID 和对应的 JSON。
+   - 通过日常启动入口启动连接器，确认该连接器就绪，并通过公网 HTTPS 请求 `/healthz` 得到桥接服务的 `status: ok`。若账户证书确由本次登录新建，且原路径仍为同一普通文件、SHA-256 一致、用户也未要求保留，则删除该本地文件。部署前已有、来源不明、验收失败或用户要求保留时均保留证书。始终保留隧道 JSON 和运行配置，账户令牌的云端撤销由用户单独决定。
 
 3. **引导绑定 Gemini**：
    - 给出简短 3 步操作：

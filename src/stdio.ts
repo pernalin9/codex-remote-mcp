@@ -93,7 +93,7 @@ function openServer(exe:string,cwd:string,sandboxTmp?:string) {
       const timer=setTimeout(()=>fail("APP_SERVER_TIMEOUT"),timeoutMs);
       try {
         if(!initialized){
-          await request("initialize",{clientInfo:{name:"codex_remote_mcp",title:"Gemini Codex Bridge",version:"0.3.0"},capabilities:null} satisfies InitializeParams);
+          await request("initialize",{clientInfo:{name:"codex_remote_mcp",title:"Gemini Codex Bridge",version:"0.3.1"},capabilities:null} satisfies InitializeParams);
           notify({method:"initialized",params:{}});initialized=true;
         }
         return await run({request,notify,onNotice:fn=>{listener=fn;},until:work=>Promise.race([work,failed.promise])});
