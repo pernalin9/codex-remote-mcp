@@ -8,6 +8,7 @@ import {resetCodexServers} from "./stdio.js";
 import {attachments,resolveLocalImages} from "./file-ops.js";
 
 import type {ThreadManagement} from "./thread-management.js";
+import type {Delivery} from "./desktop-queue.js";
 type Input=Review & {idempotency_key?:string;wait_seconds?:number;fork_from?:{thread_id:string;last_turn_id:string;title:string}};
 type Row={id:string;thread:string|null;status:string;mode:string;started:number;ended:number|null;result:string;signature:string};
 function repoForRoot(root:string) {
@@ -30,7 +31,15 @@ export class Jobs {
     db.exec("CREATE UNIQUE INDEX IF NOT EXISTS active_thread ON jobs(thread) WHERE status='running'; CREATE UNIQUE INDEX IF NOT EXISTS writer ON jobs(root) WHERE status='running' AND mode='execute'");
   }
   recover(){
-    this.db.prepare("UPDATE jobs SET status='interrupted',ended=?,result=? WHERE status='running'").run(Date.now(),JSON.stringify({error:partial}));
+    const rows=this.db.prepare("SELECT id,result FROM jobs WHERE status='running'").all();
+    for(const row of rows){
+      const id=String(row.id),d=JSON.parse(String(row.result)).queue_delivery as Delivery|undefined;
+      if(d && this.run.queue){
+        const controller=new AbortController();
+        const done=this.finishQueue(id,d,controller.signal).finally(()=>this.live.delete(id));
+        this.live.set(id,{controller,done});
+      }else this.db.prepare("UPDATE jobs SET status='interrupted',ended=?,result=? WHERE id=?").run(Date.now(),JSON.stringify({error:partial}),id);
+    }
   }
   private row(id:string){const row=this.db.prepare("SELECT * FROM jobs WHERE id=?").get(id) as Row|undefined;if(!row)throw Error("UNKNOWN_JOB");return row;}
   async get(id:string,wait=0,offset=0){
@@ -39,6 +48,7 @@ export class Jobs {
     const r=this.row(id);
     const metadata=this.db.prepare("SELECT repo,profile,thread_action,model_used FROM job_metadata WHERE id=?").get(id);
     const result=JSON.parse(r.result);
+    if(result.queue_delivery){result.client_message_id=result.queue_delivery.client_id;delete result.queue_delivery;}
     if (typeof result.final_response==="string") {
       const full=result.final_response;
       const end=Math.min(full.length,offset+12000);
@@ -102,23 +112,30 @@ export class Jobs {
     }
     const id=randomUUID(),start=Date.now(),rootKey=diskPathKey(root);
     const networkAccess=Boolean(input.network_access);
+    const queueAllowed = input.allow_queue !== false;
+    const queueCompatible = Boolean(input.thread_id) && !input.full_access && !input.local_images?.length &&
+      !input.model_override && !input.reasoning_effort;
+    const queueEligible = queueAllowed && queueCompatible;
     const fingerprintFields:unknown[]=[rootKey,thread,input.prompt,...(imageIdentity?[imageIdentity]:[])];
     if(branch)fingerprintFields.push({fork:[branch.thread_id,branch.last_turn_id,branch.title]});
     const signatureFields=[input.model_override,input.reasoning_effort,input.profile,input.title];
-    const fp=signature([...fingerprintFields,networkAccess,fullAccess]);
+    const queueFields=queueCompatible ? [...fingerprintFields,{allow_queue:queueEligible}] : fingerprintFields;
+    const fp=signature([...queueFields,networkAccess,fullAccess]);
     const sig=signature([fp,...signatureFields,networkAccess,fullAccess]);
-    const key=input.idempotency_key??null;
-    if(mode==="execute"){
-      // Pre-v2 jobs always ran with terminal networking disabled.
-      const previousFp=fullAccess ? null : signature([...fingerprintFields,networkAccess]);
-      const legacyFp=networkAccess || fullAccess ? null : signature(fingerprintFields);
+    const key=mode==="execute" || queueEligible ? input.idempotency_key??null : null;
+    if(mode==="execute" || (queueEligible && key)){
+      // Accept fingerprints from before queue settings and network/full-access flags were recorded.
+      const oldQueueFields=!queueCompatible && input.allow_queue===true ? [...fingerprintFields,{allow_queue:true}] : fingerprintFields;
+      const compatible=[queueFields,oldQueueFields].flatMap(fields=>[
+        {fp:signature([...fields,networkAccess,fullAccess]),flags:[networkAccess,fullAccess]},
+        ...(fullAccess?[]:[{fp:signature([...fields,networkAccess]),flags:[networkAccess]}]),
+        ...(networkAccess || fullAccess?[]:[{fp:signature(fields),flags:[]}])
+      ]);
       const old=(key?this.db.prepare("SELECT * FROM jobs WHERE idem=?").get(key):
-        this.db.prepare("SELECT * FROM jobs WHERE fingerprint IN (?,?,?) AND mode='execute' AND started>? ORDER BY started DESC LIMIT 1")
-          .get(fp,previousFp,legacyFp,start-120000)) as Row|undefined;
+        this.db.prepare("SELECT * FROM jobs WHERE fingerprint IN (SELECT value FROM json_each(?)) AND mode='execute' AND started>? ORDER BY started DESC LIMIT 1")
+          .get(JSON.stringify(compatible.map(entry=>entry.fp)),start-120000)) as Row|undefined;
       if(old){
-        if(key && old.signature!==sig &&
-          (previousFp===null || old.signature!==signature([previousFp,...signatureFields,networkAccess])) &&
-          (legacyFp===null || old.signature!==signature([legacyFp,...signatureFields]))) {
+        if(old.mode!==mode || (key && !compatible.some(({fp,flags})=>old.signature===signature([fp,...signatureFields,...flags])))){
           throw Error("IDEMPOTENCY_CONFLICT");
         }
         return this.get(old.id,input.wait_seconds??20);
@@ -136,11 +153,11 @@ export class Jobs {
       this.db.exec("COMMIT");
     } catch (err) {this.db.exec("ROLLBACK");throw err;}
     const controller=new AbortController();
-    const done=this.perform(id,mode,{...input,imageIdentity},root,controller.signal).finally(()=>this.live.delete(id));
+    const done=this.perform(id,mode,{...input,imageIdentity},root,controller.signal,queueEligible).finally(()=>this.live.delete(id));
     this.live.set(id,{controller,done});
     return this.get(id,input.wait_seconds??20);
   }
-  private async perform(id:string,mode:"review"|"execute",input:Input,root:string,signal:AbortSignal){
+  private async perform(id:string,mode:"review"|"execute",input:Input,root:string,signal:AbortSignal,queueEligible:boolean){
     let thread=input.thread_id,mutated=false;
     const claim=(cwd:string,value?:string)=>{
       const real=realpathSync.native(cwd);
@@ -178,6 +195,21 @@ export class Jobs {
           status="completed";break;
         }catch(e){
           if(e instanceof ReviewError)thread=e.thread_id??thread;
+          if(e instanceof ReviewError && e.code==="THREAD_BUSY" && this.run.queue && queueEligible){
+            let intent:Delivery|undefined;
+            try{
+              await this.run.queue.submit({...input,mode},root,id,signal,{
+                record:d=>{recordModel(d.model);this.saveQueuePhase(id,d,"queue_submitting");intent=d;},
+                phase:p=>{if(intent)this.saveQueuePhase(id,intent,p);}
+              });
+            }catch(submitError){
+              if(submitError instanceof Error && ["QUEUE_NOT_SUBMITTED","THREAD_PROJECT_MISMATCH"].includes(submitError.message))throw submitError;
+              if(!intent)throw Error("QUEUE_NOT_SUBMITTED");
+            }
+            if(!intent)throw Error("QUEUE_NOT_SUBMITTED");
+            await this.finishQueue(id,intent,signal);
+            return;
+          }
           if(!(e instanceof Error && e.message==="CODEX_rateLimitExceeded")||attempt||mutated||signal.aborted)throw e;
           await delay(1000,undefined,{signal});
         }
@@ -191,6 +223,25 @@ export class Jobs {
     }
     if(forkWarning)out.warning=forkWarning;
     this.db.prepare("UPDATE jobs SET status=?,thread=?,ended=?,result=? WHERE id=?").run(status,thread??null,Date.now(),JSON.stringify(out),id);
+  }
+  private saveQueuePhase(id:string,delivery:Delivery,phase:string,turnId?:string){
+    this.db.prepare("UPDATE jobs SET result=? WHERE id=? AND status='running'").run(JSON.stringify({
+      queue_delivery:delivery,phase,turn_id:turnId,last_activity_at:Date.now()
+    }),id);
+  }
+  private async finishQueue(id:string,d:Delivery,signal:AbortSignal){
+    let status="completed",out:Record<string,unknown>;
+    try{
+      const result=await this.run.queue!.track(d,signal,(p,t)=>this.saveQueuePhase(id,d,p,t));
+      out={...result,attached_files:attachments(d.cwd,result.final_response)};
+    }catch(error){
+      // The next service process resumes this same read-only tracker.
+      if(this.stopping && signal.aborted)return;
+      status="interrupted";
+      const code=error instanceof Error && error.message.startsWith("QUEUE_TURN_")?error.message:"QUEUE_OUTCOME_UNKNOWN";
+      out={turn_id:JSON.parse(this.row(id).result).turn_id,error:code,error_code:code,action_required:"CHECK_ORIGINAL_THREAD",tracking_cancelled:signal.aborted};
+    }
+    this.db.prepare("UPDATE jobs SET status=?,ended=?,result=? WHERE id=?").run(status,Date.now(),JSON.stringify({...out,client_message_id:d.client_id,delivery:"desktop_queue"}),id);
   }
   async cancel(id:string){this.row(id);this.live.get(id)?.controller.abort();return this.get(id,5);}
   async restart(force:boolean,probe:()=>Promise<unknown>){

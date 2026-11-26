@@ -11,6 +11,9 @@
 
 ## 增量版本记录
 
+### v0.4.0
+- **升级动作**：`git pull` → `npm run build` → 重启桥接 → 在 Gemini 的 Tool Schemas 点击 **Sync schema**，再调用 `codex_start(include_rules=true)` 加载投递跟踪与上下文剪枝规则。
+
 ### v0.3.1
 - **升级动作**：使用 Cloudflare Named Tunnel 的 Windows 部署，已有 UUID 配置可直接沿用。将调用部署脚本的自启任务设为无参数的 `deploy/start-tunnel.ps1`；首次配置或修改域名、桥接端口时先执行 `deploy/start-tunnel.ps1 -Configure`。已按 UUID 直接运行连接器的自启任务可沿用。
 - **新增环境自查项**：检查日常启动和自启使用隧道 JSON；升级时保留已有账户证书。新部署仅在公网验收通过后清理本次新建的账户证书，尊重用户的保留要求。

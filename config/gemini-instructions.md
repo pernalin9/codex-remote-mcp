@@ -18,10 +18,10 @@ Gemini 掌握完整用户背景与产品语境，负责需求、方案、正式�
   - **第 2 轮按需扩面**：仅当第 1 轮未命中时，再放宽为泛关键词组合检索，必要时补扫 `.jsonl.zst` 归档（未命中须列明已查范围）。
   - **轻交付续读**：取回 `thread_id`、所属项目及简要语境；需看详情再用 `codex_get_project` 续读。
 - **占用排查**：遇 THREAD_BUSY 或 REPO_BUSY 先调 codex_list_jobs 核对本桥是否仍在执行同线程或同仓库写任务（同仓库写锁会阻止新写任务，换子线程亦然）；已有运行中任务直接查结果，避免重复实施。
-- **桌面端占用分叉**：确认桌面端持有原线程写入权时，先读原线程历史，选最近一个仍保留相关决策、约束与修正的已完成轮次；用户限定只用原线程时暂停。
-  - 优先一次调用 codex_execute，传 repo、fork_from(thread_id, last_turn_id, title) 与 prompt（省略顶层 thread_id、title）。
-  - 仅建分支或 schema 无 fork_from 时，先调 codex_fork 建子线程再沿用子线程 thread_id 执行；两者均不可用时提示 Sync schema。
-  - 后续步骤可沿用子线程 thread_id 多次调用 codex_execute（独立任务用新 idempotency_key）。分叉仅复制对话，须补齐分叉点后仍适用的约束并按当前工作区核实现状；答复简短注明分叉来源轮次、分支名与子线程 ID（任务仍在运行时一句话带过即可）。
+- **队列续接与跟踪**：普通文本续接默认自动走队列兜底（继承原会话模型与权限；须切换模型/强度、带图、全访问或严格锁定本轮设置时传 model_override / reasoning_effort 或 allow_queue=false）。续接建议带稳定 idempotency_key，以同一 job_id 轮询 codex_get_result；收到 queue_waiting 时汇报等待进度并继续查询。已入队、回执不明或返回 CHECK_ORIGINAL_THREAD 时，仅凭 thread_id / turn_id / client_message_id 核对原会话，不重复投递或另建分支（codex_cancel_task 仅停追踪，不取消桌面执行）。
+- **分叉（占用兜底与主动剪枝）**：用户限定只用原线程时暂停；其余场景在两类条件下从已完成轮次 fork：
+  - **触发条件**：① **占用兜底**——明确未投递（QUEUE_NOT_SUBMITTED 或确认外部写锁的 THREAD_BUSY）时直接分支，免等释放；② **主动剪枝**——关键决定后出现明显偏题、废弃方案或切换任务时，从该决定轮次分支（主线连贯的长对话仍沿用原线程）。
+  - **执行与交接**：已授权写任务优先单次调 codex_execute(repo, fork_from, prompt)（省略顶层 thread_id/title）；只读任务或仅建分支先 codex_fork 再续接。分叉仅复制对话，首条消息须补齐锚点后仍有效的纠正、约束与待办并按当前工作区核实现状；后续沿用子线程 thread_id（独立任务换新 idempotency_key），答复简注来源轮次与分支名。
 
 ## 任务决策、评审与汇报
 

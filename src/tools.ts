@@ -39,6 +39,8 @@ export function registerTools(server:McpServer,jobs:Jobs,start:StartTool,full:bo
     model_override:str.optional().describe("显式指定模型，覆盖档位的模型设置。"),
     reasoning_effort:z.enum(["low","medium","high","xhigh"]).optional().describe("覆盖档位的推理强度。"),
     wait_seconds:wait(25),
+    allow_queue:z.boolean().optional().describe("默认对普通文本续接自动启用队列兜底（遇桌面写锁时沿用原会话设置执行）。需要严格固定本轮模型或沙箱设置、禁用队列时传 false。"),
+    idempotency_key:str.optional().describe("同一次投递或执行重试沿用原键和参数。不同任务使用不同键。"),
     network_access:z.boolean().default(false).describe("默认 false。传 true 仅对此轮开启终端沙箱网络；读写权限由工具类型决定。"),
     local_images:z.array(str.describe("一张仓库内图片的相对路径。")).max(4).optional()
       .describe("随任务传给 Codex 的仓库内图片。支持 PNG、JPEG、GIF、WebP，最多 4 张，每张最多 10 MiB。")
@@ -65,7 +67,7 @@ export function registerTools(server:McpServer,jobs:Jobs,start:StartTool,full:bo
   server.registerTool("codex_rename_thread",{description:"更改指定项目中会话的显示名称。分支保留 [Gem][Fork] 前缀。",
     inputSchema:namedThread,annotations:annotations("重命名会话",true,false,true)},
     (args,extra)=>safe(()=>{access();return jobs.mutate(extra.signal,signal=>manage.rename(args,signal));}));
-  server.registerTool("codex_review",{description:"只读评审。一次性独立调查传 ephemeral=true，省略 thread_id，凭 job_id 取结果。",inputSchema:z.object({...input,ephemeral:z.boolean().optional().describe("传 true 发起不保存线程的一次性评审，须省略 thread_id。")}).strict(),annotations:annotations("只读评审",true,false,false,true)},args=>safe(()=>jobs.submit("review",args)));
+  server.registerTool("codex_review",{description:"只读评审。一次性独立调查传 ephemeral=true，省略 thread_id，凭 job_id 取结果。",inputSchema:z.object({...input,ephemeral:z.boolean().optional().describe("传 true 发起不保存线程的一次性评审，须省略 thread_id。")}).strict(),annotations:annotations("只读评审",true,false,false,true)},args=>safe(()=>jobs.submit("review",{...args,allow_queue: full ? args.allow_queue : false})));
   server.registerTool("codex_execute",{description:"执行已授权的项目任务。需要从历史分叉并执行时，在同一次调用中传 fork_from。后续独立任务可多次执行，每次沿用返回的子线程 thread_id。",inputSchema:{
     ...input,
     full_access:z.boolean().default(false).describe("默认 false。仅对白名单内的实际项目按需启用全权限沙箱，须获得用户明确授权。"),
@@ -73,8 +75,7 @@ export function registerTools(server:McpServer,jobs:Jobs,start:StartTool,full:bo
       thread_id:threadId.describe("分叉来源的父线程 ID。"),
       last_turn_id:z.string().min(1).max(128).describe("要包含的最后一个已完成轮次 ID。"),
       title:namedThread.title
-    }).optional().describe("创建并命名子线程后执行首个任务。须指定 repo，省略顶层 thread_id 和 title。"),
-    idempotency_key:str.optional().describe("重试同一任务时沿用原键和参数。新的执行任务使用新键。")
+    }).optional().describe("创建并命名子线程后执行首个任务。须指定 repo，省略顶层 thread_id 和 title。")
   },annotations:annotations("执行修改",true,true,false,true)},args=>safe(()=>{access();return jobs.submit("execute",args);}));
   const id={job_id:z.string().uuid().describe("提交任务后返回的 job_id。")};
   server.registerTool("codex_get_result",{description:"查询阶段、最近活动和结果；传回 next_offset 续读。",inputSchema:{...id,wait_seconds:wait(50),offset:offset.describe("读取最终回复的后续页时传上一页 next_offset，默认 0。")},annotations:annotations("查询结果",true)},args=>safe(()=>jobs.get(args.job_id,args.wait_seconds,args.offset)));

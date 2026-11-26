@@ -1,6 +1,7 @@
 import { realpathSync } from "node:fs";
 import { RpcError, withAppServer, withTurnServer, type Rpc } from "./stdio.js";
 import { profiles } from "./config.js";
+import { desktopQueue } from "./desktop-queue.js";
 import { projectPath, exposedDirectory, directoryKey, fullAccessProjects } from "./projects.js";
 import { sandboxTempDirectory } from "./runtime.js";
 import { fileError, resolveLocalImages } from "./file-ops.js";
@@ -23,6 +24,7 @@ export interface Review {
   model_override?:string;
   reasoning_effort?:"low"|"medium"|"high"|"xhigh";
   ephemeral?:boolean;
+  allow_queue?:boolean;
   local_images?:string[];
   network_access?:boolean;
   full_access?:boolean;
@@ -35,6 +37,7 @@ export interface Review {
 }
 interface Result { turn_id?:string; cwd?:string; model_used?:string; thread_id: string; title?: string; final_response: string; truncated: boolean }
 export type Reviewer = ((input: Review, signal?: AbortSignal) => Promise<Result>) & {
+  queue?:ReturnType<typeof desktopQueue>;
   resolveThreadRoot?:(cwd:string,threadId:string,explicitRepo:boolean)=>Promise<string>;
   authorizeFullAccess?:(cwd:string,threadId:string|null,explicitRepo:boolean)=>Promise<string>;
 };
@@ -52,6 +55,7 @@ export function createReviewer(executable: string): Reviewer {
   const resolveThreadRoot:NonNullable<Reviewer["resolveThreadRoot"]>=(cwd,threadId,explicitRepo)=>
     withAppServer(executable,cwd,undefined,10000,rpc=>readThreadRoot(rpc,threadId,explicitRepo?cwd:undefined));
   run.resolveThreadRoot=resolveThreadRoot;
+  run.queue=desktopQueue(executable);
   run.authorizeFullAccess=async(cwd,threadId,explicitRepo)=>{
     const actual=threadId ? await resolveThreadRoot(cwd,threadId,explicitRepo) : cwd;
     assertFullAccess(actual);
@@ -151,12 +155,14 @@ async function review(executable: string, cwd: string, input: Review, signal?: A
       if(directoryKey(thread.thread.cwd)!==cwdKey || directoryKey(thread.cwd)!==cwdKey){
         throw new ReviewError("THREAD_PROJECT_MISMATCH",threadId);
       }
+      if (thread.thread.status.type === "active") {
+        throw new ReviewError("THREAD_BUSY",threadId,"THREAD_BUSY");
+      }
       const expected=full?"dangerFullAccess":write?"workspaceWrite":"readOnly";
       if(thread.sandbox?.type && thread.sandbox.type!==expected){
         throw new ReviewError("THREAD_SANDBOX_MISMATCH",threadId);
       }
       input.claim?.(thread.cwd,threadId);
-      if (thread.thread.status.type === "active") throw new ReviewError("THREAD_BUSY",threadId);
       if (!input.thread_id) {
         const label = (title ?? Array.from(input.prompt).slice(0,36).join("")).replace(/^(?:\[(?:Gem|Gemini)\]\s*)+/i,"").trim();
         title = "[Gem] " + (label || "对话");

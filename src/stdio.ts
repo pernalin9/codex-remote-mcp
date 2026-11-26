@@ -14,7 +14,7 @@ export interface Rpc {
   onNotice(fn:(notice:Notice)=>void):void;
   until<T>(work:Promise<T>):Promise<T>;
 }
-function openServer(exe:string,cwd:string,sandboxTmp?:string) {
+function openServer(exe:string,cwd:string,sandboxTmp?:string,experimental=false) {
   const env={...process.env};
   if(sandboxTmp){
     for(const key of Object.keys(env)) if(/^(TEMP|TMP|TMPDIR)$/i.test(key))delete env[key];
@@ -93,7 +93,7 @@ function openServer(exe:string,cwd:string,sandboxTmp?:string) {
       const timer=setTimeout(()=>fail("APP_SERVER_TIMEOUT"),timeoutMs);
       try {
         if(!initialized){
-          await request("initialize",{clientInfo:{name:"codex_remote_mcp",title:"Gemini Codex Bridge",version:"0.3.1"},capabilities:null} satisfies InitializeParams);
+          await request("initialize",{clientInfo:{name:"codex_remote_mcp",title:"Gemini Codex Bridge",version:"0.4.0"},capabilities:experimental?{experimentalApi:true,requestAttestation:false}:null} satisfies InitializeParams);
           notify({method:"initialized",params:{}});initialized=true;
         }
         return await run({request,notify,onNotice:fn=>{listener=fn;},until:work=>Promise.race([work,failed.promise])});
@@ -121,8 +121,8 @@ function openServer(exe:string,cwd:string,sandboxTmp?:string) {
     }
   };
 }
-export async function withAppServer<T>(exe:string,cwd:string,signal:AbortSignal|undefined,timeoutMs:number,run:(rpc:Rpc)=>Promise<T>) {
-  const server=openServer(exe,cwd);
+export async function withAppServer<T>(exe:string,cwd:string,signal:AbortSignal|undefined,timeoutMs:number,run:(rpc:Rpc)=>Promise<T>,experimental=false) {
+  const server=openServer(exe,cwd,undefined,experimental);
   try{return await server.use(signal,timeoutMs,run);}finally{await server.close();}
 }
 type Lease={server:ReturnType<typeof openServer>; timer:NodeJS.Timeout;key:string};
