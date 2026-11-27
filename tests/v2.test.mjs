@@ -83,7 +83,9 @@ function fakeAppServer() {
           : {data:[history[1]],nextCursor:"older"});
         break;
       case "thread/fork":
-        reply({thread:{id:threadId,cwd:target,name:null}});
+        reply({thread:{id:threadId,cwd:target,name:null},sandbox:{type:{
+          "read-only":"readOnly","workspace-write":"workspaceWrite","danger-full-access":"dangerFullAccess"
+        }[req.params.sandbox]}});
         break;
       case "thread/resume":
       case "thread/start":
@@ -427,9 +429,19 @@ test("forked execution creates one named child and subsequent turns resume it",a
   assert.notEqual(next.job_id,first.job_id);
   const calls=fs.readFileSync(f.log,"utf8").trim().split("\n").map(line=>JSON.parse(line));
   const params=method=>calls.filter(x=>x.method===method).map(x=>x.params);
-  assert.deepEqual(params("thread/fork").map(p=>[p.threadId,p.lastTurnId]),[[parent,"old"]]);
+  assert.deepEqual(params("thread/fork").map(p=>[p.threadId,p.lastTurnId,p.sandbox,p.approvalPolicy,p.approvalsReviewer]),
+    [[parent,"old","workspace-write","on-request","auto_review"]]);
   assert.deepEqual(params("thread/name/set"),[{threadId,name:"[Gem][Fork] branch"}]);
   assert.deepEqual(params("turn/start").map(p=>p.threadId),[threadId,threadId]);
+  const manage=threadManagement(process.execPath);
+  const target={repo:"Target",thread_id:parent,last_turn_id:"old",title:"other sandbox"};
+  await manage.fork(target);
+  await manage.fork({...target,sandbox:"danger-full-access"});
+  const forks=fs.readFileSync(f.log,"utf8").trim().split("\n").map(line=>JSON.parse(line))
+    .filter(entry=>entry.method==="thread/fork").slice(-2);
+  assert.deepEqual(forks.map(({params:p})=>[p.sandbox,p.approvalPolicy,p.approvalsReviewer]),[
+    ["read-only","never",undefined],["danger-full-access","on-request","auto_review"]
+  ]);
 });
 
 test("network access is sent on every turn and distinguishes execute requests",async t=>{

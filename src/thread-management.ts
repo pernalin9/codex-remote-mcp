@@ -6,6 +6,10 @@ import type { ThreadForkParams } from "./generated/app-server-schema/v2/ThreadFo
 import type { ThreadTurnsListResponse } from "./generated/app-server-schema/v2/ThreadTurnsListResponse";
 
 type Target={repo:string;thread_id:string};
+type ForkSandbox=NonNullable<ThreadForkParams["sandbox"]>;
+const sandboxType={
+  "read-only":"readOnly","workspace-write":"workspaceWrite","danger-full-access":"dangerFullAccess"
+} satisfies Record<ForkSandbox,ThreadForkResponse["sandbox"]["type"]>;
 function projectRoot(repo:string) {
   const cwd=projectPath(repo);
   if(!cwd) throw new Error("UNKNOWN_REPO");
@@ -22,7 +26,7 @@ function branchTitle(title:string) {
 }
 export function threadManagement(exe:string) {
   return {
-    fork(input:Target & {last_turn_id:string;title:string},signal?:AbortSignal,onCreated?:(threadId:string)=>void) {
+    fork(input:Target & {last_turn_id:string;title:string;sandbox?:ForkSandbox},signal?:AbortSignal,onCreated?:(threadId:string)=>void) {
       const cwd=projectRoot(input.repo);
       return withAppServer(exe,cwd,signal,30000,async rpc=>{
         await verifiedThread(rpc,input.thread_id,cwd);
@@ -39,15 +43,19 @@ export function threadManagement(exe:string) {
           if(!page.nextCursor) throw new Error("UNKNOWN_TURN");
           cursor=page.nextCursor;
         }
+        const sandbox=input.sandbox??"read-only";
+        const approvals=sandbox==="read-only"
+          ? {approvalPolicy:"never"} as const
+          : {approvalPolicy:"on-request",approvalsReviewer:"auto_review"} as const;
         const fork=await rpc.request<ThreadForkResponse>("thread/fork",{
           threadId:input.thread_id,lastTurnId:input.last_turn_id,cwd,excludeTurns:true,ephemeral:false,
-          sandbox:"read-only",approvalPolicy:"never",config:{web_search:"cached"}
+          sandbox,...approvals,config:{web_search:"cached"}
         } satisfies ThreadForkParams);
         const {thread}=fork;
         if(!exposedDirectory(thread.cwd,cwd) || (fork.cwd && !exposedDirectory(fork.cwd,cwd))){
           throw new Error("THREAD_PROJECT_MISMATCH");
         }
-        if(fork.sandbox?.type && fork.sandbox.type!=="readOnly")throw new Error("THREAD_SANDBOX_MISMATCH");
+        if(fork.sandbox?.type!==sandboxType[sandbox])throw new Error("THREAD_SANDBOX_MISMATCH");
         const result={parent_thread_id:input.thread_id,last_turn_id:input.last_turn_id,thread_id:thread.id};
         onCreated?.(thread.id);
         const title=branchTitle(input.title);

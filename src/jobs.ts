@@ -182,7 +182,9 @@ export class Jobs {
     let forkWarning:string|undefined;
     try{
       if(input.fork_from && input.repo && this.fork){
-        const branch=await this.fork({repo:input.repo,...input.fork_from},signal,child=>claim(root,child));
+        const branch=await this.fork({
+          repo:input.repo,...input.fork_from,sandbox:input.full_access?"danger-full-access":"workspace-write"
+        },signal,child=>claim(root,child));
         thread=branch.thread_id;
         if("warning" in branch)forkWarning=branch.warning;
         signal.throwIfAborted();

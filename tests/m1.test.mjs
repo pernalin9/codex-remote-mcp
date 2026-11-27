@@ -11,7 +11,7 @@ const fixture=configuredBridge(test);
 const {Jobs}=await fixture("jobs");
 const {ReviewError}=await fixture("app-server-client");
 import {RpcError} from "../dist/stdio.js";
-import {queuedTurnResult} from "../dist/desktop-queue.js";
+import {latestQueuePermissions,parseQueuePermissions,queuedTurnResult} from "../dist/desktop-queue.js";
 
 test("desktop history can temporarily report interrupted even after final text appears",()=>{
   const turn={id:"turn",status:"interrupted",completedAt:null,items:[{type:"agentMessage",text:"answer"}]};
@@ -56,6 +56,40 @@ test("ambiguous queue acknowledgement, service restart and duplicate submit only
     }
     assert.equal(sends,1);
   }finally{db.close();}
+});
+
+test("managed queue permissions recognize project ancestors and Windows namespaces",()=>{
+  const permissions=entry=>({type:"managed",network:"enabled",file_system:{type:"restricted",entries:[entry]}});
+  const cwd=String.raw`\\?\D:\Project\Servers`;
+  const write=folder=>({access:"write",path:{type:"path",path:folder}});
+  assert.deepEqual(parseQueuePermissions(permissions(write(String.raw`d:\project`)),cwd),{readOnly:false,networkAccess:true});
+  assert.equal(parseQueuePermissions(permissions(write(String.raw`D:\PROJECT\servers`)),cwd).readOnly,false);
+  assert.equal(parseQueuePermissions(permissions(write(String.raw`D:\Project\Server`)),cwd).readOnly,true);
+  assert.equal(parseQueuePermissions(permissions(write(String.raw`C:\Project`)),cwd).readOnly,true);
+  assert.equal(parseQueuePermissions(permissions({access:"write",path:{type:"special",value:{kind:"root"}}}),cwd).readOnly,false);
+  assert.equal(parseQueuePermissions(permissions({access:"read",path:{type:"special",value:{kind:"root"}}}),cwd).readOnly,true);
+});
+
+test("fork_from initializes regular and full-access writes with their respective sandboxes",async()=>{
+  const db=new DatabaseSync(":memory:");
+  const requests=[];
+  const run=async input=>({thread_id:input.thread_id,final_response:"done",truncated:false});
+  run.authorizeFullAccess=async root=>root;
+  const jobs=new Jobs(db,run,async (input,signal,onCreated)=>{
+    requests.push(input);
+    const thread_id="child-"+requests.length;
+    onCreated(thread_id);
+    return {thread_id};
+  });
+  const request={repo:"Other",prompt:"write",fork_from:{thread_id:"parent",last_turn_id:"anchor",title:"branch"}};
+  try{
+    assert.equal((await jobs.submit("execute",request)).status,"completed");
+    assert.equal((await jobs.submit("execute",{...request,full_access:true})).status,"completed");
+    assert.deepEqual(requests.map(r=>r.sandbox),["workspace-write","danger-full-access"]);
+  }finally{
+    await jobs.shutdown();
+    db.close();
+  }
 });
 
 test("native desktop queue inherits settings and accepts pending and active turns",async t=>{
@@ -128,6 +162,19 @@ test("native desktop queue inherits settings and accepts pending and active turn
   await assert.rejects(submit({mode:"review"}),/THREAD_PROJECT_MISMATCH/);
   assert.equal(records,1);
 
+  const managed=(entries,network="enabled")=>({type:"managed",network,file_system:{type:"restricted",entries}});
+  const writeRoot={access:"write",path:{type:"path",path:path.dirname(cwd)}};
+  const desktopSettings=JSON.stringify({type:"event_msg",payload:{
+    type:"thread_settings_applied",thread_settings:{permission_profile:managed([], "restricted")}
+  }})+"\n";
+  state();
+  fs.writeFileSync(rollout,context(readOnly)+context(writable)+desktopSettings);
+  assert.deepEqual(await latestQueuePermissions(rollout,thread.id,cwd),{readOnly:true,networkAccess:false});
+  await assert.rejects(submit({mode:"execute"}),/QUEUE_NOT_SUBMITTED/);
+  assert.equal(records,1);
+  fs.appendFileSync(rollout,context(writable));
+  assert.deepEqual(await latestQueuePermissions(rollout,thread.id,cwd),{readOnly:false,networkAccess:true});
+
   fs.writeFileSync(rollout,context(readOnly)+context({type:"future-format"}));
   state({model:""},null);
   const noAnchor=await submit({mode:"execute",network_access:true});
@@ -140,6 +187,35 @@ test("native desktop queue inherits settings and accepts pending and active turn
     state({path:file});
     await submit({mode:"execute",network_access:true});
   }
+
+  function stateDatabase(name,policy){
+    const db=new DatabaseSync(path.join(home,name));
+    try{
+      db.exec("CREATE TABLE threads (id TEXT PRIMARY KEY, sandbox_policy TEXT)");
+      db.prepare("INSERT INTO threads VALUES (?, ?)").run(thread.id,JSON.stringify(policy));
+    }finally{db.close();}
+  }
+  stateDatabase("state_4.sqlite",writable);
+  stateDatabase("state_5.sqlite",managed([], "restricted"));
+  const compressed=rollout+".zst";
+  state({path:compressed});
+  assert.deepEqual(await latestQueuePermissions(compressed,thread.id,cwd),{readOnly:true,networkAccess:false});
+  await assert.rejects(submit({mode:"execute"}),/QUEUE_NOT_SUBMITTED/);
+  const update=new DatabaseSync(path.join(home,"state_5.sqlite"));
+  try{
+    update.prepare("UPDATE threads SET sandbox_policy=? WHERE id=?").run(JSON.stringify({permission_profile:managed([writeRoot])}),thread.id);
+  }finally{update.close();}
+  state({path:null});
+  assert.deepEqual(await latestQueuePermissions(null,thread.id,cwd),{readOnly:false,networkAccess:true});
+  await submit({mode:"execute",network_access:true});
+  fs.writeFileSync(rollout,'{"type":"event_msg","payload":{"type":"other"}}\n');
+  assert.deepEqual(await latestQueuePermissions(rollout,thread.id,cwd),{readOnly:false,networkAccess:true});
+  const stateWithLegacyPolicy=new DatabaseSync(path.join(home,"state_5.sqlite"));
+  try{
+    stateWithLegacyPolicy.prepare("UPDATE threads SET sandbox_policy=?").run(JSON.stringify({sandbox_policy:readOnly}));
+  }finally{stateWithLegacyPolicy.close();}
+  assert.deepEqual(await latestQueuePermissions(null,thread.id,cwd),{readOnly:true,networkAccess:false});
+  assert.equal(await latestQueuePermissions(null,"absent",cwd),undefined);
 
   state();
   fs.writeFileSync(rollout,context(writable));
