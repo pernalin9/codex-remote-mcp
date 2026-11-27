@@ -1,6 +1,8 @@
 # Codex Remote MCP
 
-连接 **Gemini 网页端** 与本机 **Codex** 的个人双 Agent 协作桥（支持 Windows / macOS）。Gemini 负责需求梳理、方案设计与体验把控，本机 Codex 负责核查仓库、修改代码并运行验证，并与 **Codex 桌面端** 保持同会话协同。
+将本机 **Codex** 封装为远程 MCP 服务的个人双 Agent 协作桥（支持 Windows / macOS）。项目目前面向 **Gemini 网页端** 做了深度适配，同时也适用于其他支持远程 MCP 的网页端 AI、桌面客户端或 CLI Agent。
+
+下文均以 Gemini 为例：由上游 AI 负责需求梳理、方案设计与体验把控，本机 Codex 负责核查仓库、修改代码并运行验证，并与 **Codex 桌面端** 保持同会话协同。
 
 ## 核心能力
 
